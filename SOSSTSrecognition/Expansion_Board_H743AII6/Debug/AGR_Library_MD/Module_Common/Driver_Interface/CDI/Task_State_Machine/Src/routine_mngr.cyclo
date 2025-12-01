@@ -1,0 +1,7 @@
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/routine_mngr.c:53:24:CreateRoutineEntity	1
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/routine_mngr.c:64:6:InitRoutine	2
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/routine_mngr.c:75:5:EntRoutines	4
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/routine_mngr.c:94:5:RunRoutines	4
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/routine_mngr.c:113:5:ExtRoutines	4
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/routine_mngr.c:132:6:ClearRoutines	2
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/routine_mngr.c:140:5:PushRoutine	4

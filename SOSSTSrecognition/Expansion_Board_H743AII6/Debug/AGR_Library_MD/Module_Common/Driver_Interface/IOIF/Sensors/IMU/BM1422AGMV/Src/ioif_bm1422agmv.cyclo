@@ -1,0 +1,5 @@
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/BM1422AGMV/Src/ioif_bm1422agmv.c:126:9:IOIF_InitMag	3
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/BM1422AGMV/Src/ioif_bm1422agmv.c:156:9:IOIF_GetMagValue	3
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/BM1422AGMV/Src/ioif_bm1422agmv.c:186:16:IsDevReady	1
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/BM1422AGMV/Src/ioif_bm1422agmv.c:192:16:ReadReg	1
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/BM1422AGMV/Src/ioif_bm1422agmv.c:198:16:WriteReg	1

@@ -1,0 +1,6 @@
+../AGR_Library_MD/Module_Common/HW_Drivers/HW_Peripherals/IMU/BM1422AGMV/Src/bm1422agmv.c:80:9:BM1422AGMV_SetIoctx	5
+../AGR_Library_MD/Module_Common/HW_Drivers/HW_Peripherals/IMU/BM1422AGMV/Src/bm1422agmv.c:103:9:BM1422AGMV_Init	4
+../AGR_Library_MD/Module_Common/HW_Drivers/HW_Peripherals/IMU/BM1422AGMV/Src/bm1422agmv.c:142:9:BM1422AGMV_GetValue	3
+../AGR_Library_MD/Module_Common/HW_Drivers/HW_Peripherals/IMU/BM1422AGMV/Src/bm1422agmv.c:189:16:WriteReg	1
+../AGR_Library_MD/Module_Common/HW_Drivers/HW_Peripherals/IMU/BM1422AGMV/Src/bm1422agmv.c:202:16:SetReg	1
+../AGR_Library_MD/Module_Common/HW_Drivers/HW_Peripherals/IMU/BM1422AGMV/Src/bm1422agmv.c:232:13:CalValues	2

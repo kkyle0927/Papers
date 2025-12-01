@@ -1,0 +1,6 @@
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/task_mngr.c:53:6:InitTask	1
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/task_mngr.c:60:6:RunTask	1
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/task_mngr.c:65:6:SetTaskStateEntity	2
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/task_mngr.c:76:6:SetTaskRoutineEntity	1
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/task_mngr.c:88:6:SetTaskErrCode	1
+../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Task_State_Machine/Src/task_mngr.c:93:10:GetTaskErrCode	1

@@ -1,0 +1,5 @@
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/ICM20608G/Src/ioif_icm20608g.c:127:19:IOIF_Init6Axis	3
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/ICM20608G/Src/ioif_icm20608g.c:157:19:IOIF_Get6AxisValue	3
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/ICM20608G/Src/ioif_icm20608g.c:187:16:IsDevReady	1
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/ICM20608G/Src/ioif_icm20608g.c:193:16:ReadReg	1
+../AGR_Library_MD/Module_Common/Driver_Interface/IOIF/Sensors/IMU/ICM20608G/Src/ioif_icm20608g.c:199:16:WriteReg	1
