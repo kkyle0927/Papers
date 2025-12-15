@@ -1,7 +1,0 @@
-../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Buff_Mngr/Ring_Buffer/Src/ring_buffer.c:11:6:RingBufferCreate	1
-../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Buff_Mngr/Ring_Buffer/Src/ring_buffer.c:21:6:RingBufferPush	4
-../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Buff_Mngr/Ring_Buffer/Src/ring_buffer.c:49:6:RingBufferPop	5
-../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Buff_Mngr/Ring_Buffer/Src/ring_buffer.c:75:6:RingBufferFlush	1
-../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Buff_Mngr/Ring_Buffer/Src/ring_buffer.c:84:6:RingBufferIsFull	3
-../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Buff_Mngr/Ring_Buffer/Src/ring_buffer.c:93:6:RingBufferIsEmpty	2
-../AGR_Library_MD/Module_Common/Driver_Interface/CDI/Buff_Mngr/Ring_Buffer/Src/ring_buffer.c:102:6:RingBufferIsAvailable	3
