@@ -724,7 +724,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
             const float swing_period_s = s_swing_period_ms * 0.001f;
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
-            s_norm_T_HC = ((s_T_HC_ms * 0.001f) / swing_period_s) / s_scaling_Y;
+            s_norm_T_HC = ((s_T_HC_ms) / swing_period_s) / s_scaling_Y;
 
             s_dbg_norm_vel_HC = s_norm_vel_HC;
             s_dbg_norm_T_HC = s_norm_T_HC;
@@ -752,7 +752,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
             const float swing_period_s = s_swing_period_ms * 0.001f;
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
-            s_norm_T_HC = ((s_T_HC_ms * 0.001f) / swing_period_s) / s_scaling_Y;
+            s_norm_T_HC = ((s_T_HC_ms) / swing_period_s) / s_scaling_Y;
 
             s_dbg_norm_vel_HC = s_norm_vel_HC;
             s_dbg_norm_T_HC = s_norm_T_HC;

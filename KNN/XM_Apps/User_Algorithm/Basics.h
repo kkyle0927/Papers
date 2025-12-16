@@ -5,6 +5,7 @@
 #include "mti-630.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* --- 공통 enum / struct --- */
 typedef enum {
@@ -76,6 +77,25 @@ typedef struct __attribute__((packed)) {
 
     uint16_t crc;
 } SavingData_t;
+
+// Wire-format safety checks:
+// - 'crc' must be the last field.
+// - 'len' is transmitted as sizeof(SavingData_t) (see FillAndSendSavingData).
+// NOTE: Do NOT hard-code a specific size here unless your PC parser expects it.
+#ifndef PACKING_ASSERTS_ENABLED
+#define PACKING_ASSERTS_ENABLED
+#endif
+
+#ifdef PACKING_ASSERTS_ENABLED
+    #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+    _Static_assert(offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc) == sizeof(SavingData_t),
+                   "SavingData_t layout error: 'crc' must be the last field");
+    #else
+    typedef char SavingData_t_crc_must_be_last[
+        ((offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc)) == sizeof(SavingData_t)) ? 1 : -1
+    ];
+    #endif
+#endif
 
 /* --- 공유 전역 변수 extern --- */
 extern uint32_t      s_dataSaveLoopCnt;

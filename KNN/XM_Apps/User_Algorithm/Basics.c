@@ -10,6 +10,7 @@ void UpdateXsensImuEnable(void)
     }
 }
 
+
 void FillAndSendSavingData(void)
 {
     // 1) loopCnt 채우고 증가
@@ -67,16 +68,22 @@ void FillAndSendSavingData(void)
     SavingData.s_scaling_Y    = (float)s_dbg_scaling_Y;
 
     // 3) 헤더/CRC 설정
+    // NOTE: 'len' MUST match the actual transmitted byte count.
+    const uint16_t tx_len = (uint16_t)sizeof(SavingData_t);
+
     SavingData.sof = TRANSMIT_SOF;
-    SavingData.len = (uint16_t)sizeof(SavingData_t);
+    SavingData.len = tx_len;
 
     // crc 자신을 제외한 전체에 대해 CRC 계산
-    uint16_t crc = CalcCrc16((const uint8_t*)&SavingData,
-                              sizeof(SavingData_t) - sizeof(SavingData.crc));
-    SavingData.crc = crc;
+    SavingData.crc = CalcCrc16((const uint8_t*)&SavingData,
+                              (uint32_t)tx_len - (uint32_t)sizeof(SavingData.crc));
 
     // 4) 전송 (리턴값은 필요하면 체크)
-    (void)XM_SendUsbData(&SavingData, sizeof(SavingData_t));
+    // Safety: never transmit a frame whose internal length disagrees with the byte count.
+    if (SavingData.sof != TRANSMIT_SOF || SavingData.len != tx_len) {
+        return;
+    }
+    (void)XM_SendUsbData(&SavingData, tx_len);
 }
 
 uint16_t CalcCrc16(const uint8_t* data, uint32_t length)

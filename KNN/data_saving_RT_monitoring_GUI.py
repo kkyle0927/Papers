@@ -13,6 +13,7 @@ from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt
 
 import pyqtgraph as pg
 import numpy as np
+from collections import deque, Counter
 
 # ===================== 0) 백엔드 고정 설정 =====================
 UPDATE_INTERVAL_MS = 50         # 실시간 그래프 갱신 주기 (ms) (20Hz)
@@ -66,6 +67,8 @@ FLUSH_EVERY = 500               # CSV 라인 500개 모을 때마다 디스크�
 # } SavingData_t;
 
 SOF_VALUE = 0xAA55
+SOF_BYTES_LE = b"\x55\xAA"  # uint16 0xAA55 in little-endian stream
+SOF_BYTES_BE = b"\xAA\x55"  # uint16 0xAA55 in big-endian stream
 
 # payload 부분 (sof/len/crc 제외):
 #   uint32 loopCnt
@@ -74,17 +77,30 @@ SOF_VALUE = 0xAA55
 #   int32  6개 (is_moving, hc_count, R/L upeak, R/L dpeak)
 #   uint8  2개 (tau_max_setting, s_gait_mode)
 #   float  1개 (s_g_knn_conf)
-#   float  9개 (s_g_knn_conf + T_swing_ms/SOS/STS + s_vel_HC + s_T_HC_s + norm/scaling)
-STRUCT_FMT = '<IBBB21f6iBB10f'
+#   float  8개 (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms, s_vel_HC, s_T_HC_s,
+#               s_norm_vel_HC, s_norm_T_HC, s_scaling_X)
+# NOTE: The currently running firmware (see Papers/KNN/Debug/KNN.list) uses sizeof(SavingData_t)=159,
+# so payload size is 153 (=159-6). That corresponds to 8 trailing floats here.
+STRUCT_FMT = '<IBBB21f6iBBf8f'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
 # 전체 패킷 예상 길이: sof(2) + len(2) + payload + crc(2)
 EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2
 
 # Some firmware builds may send an older/newer SavingData_t size.
-# We accept packets whose internal len matches any of these allowed sizes.
-# Keep EXPECTED_TOTAL_PACKET_SIZE as the primary target.
-ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
+# In that case, the firmware's internal 'len' still matches the transmitted bytes,
+# but the PC-side payload schema (STRUCT_FMT) may or may not match.
+#
+# We accept variable lengths as long as they are:
+# - within a sane range
+# - at least big enough to contain our expected payload + CRC
+# The deeper validation later (payload size / struct.unpack / sanity checks)
+# will still reject incompatible formats.
+ALLOWED_TOTAL_PACKET_SIZES = None  # None => accept a range (see receive loop)
+
+# Back-compat placeholder: older builds sometimes had different struct sizes.
+# Keep this defined because some status strings reference it.
+EXPECTED_TOTAL_PACKET_SIZE_V0 = EXPECTED_TOTAL_PACKET_SIZE
 
 CSV_HEADER = (
     "LoopCnt,H10Mode,H10AssistLevel,SmartAssist,"
@@ -130,6 +146,78 @@ def make_missing_row(loop_cnt: int, last_row=None):
             row[idx] = 0
     return row
 
+
+def _is_finite_number(x) -> bool:
+    try:
+        return np.isfinite(float(x))
+    except Exception:
+        return False
+
+
+def sanity_check_row(row, last_good_row=None):
+    """Return (ok:bool, reason:str). Used to reject misaligned/garbage decodes."""
+    try:
+        loop_cnt = int(row[0])
+    except Exception:
+        return False, "Invalid loopCnt"
+
+    # LoopCnt should be monotonic (allow reset to 0 when recording restarts)
+    if last_good_row is not None:
+        try:
+            prev = int(last_good_row[0])
+            if loop_cnt != 0 and loop_cnt < prev:
+                return False, f"loopCnt went backwards ({loop_cnt} < {prev})"
+            if loop_cnt - prev > 5000:
+                return False, f"loopCnt jump too large ({loop_cnt} vs {prev})"
+        except Exception:
+            pass
+
+    # is_moving must be 0/1
+    try:
+        is_moving = int(row[CSV_COLS.index("is_moving")])
+        if is_moving not in (0, 1):
+            return False, f"is_moving out of range ({is_moving})"
+    except Exception:
+        return False, "is_moving missing"
+
+    # tau_max_setting is informative only (do not treat as a hard gate).
+    # It is frequently the first field to look corrupted when a packet is slightly misaligned.
+    # We still display it in the UI, but we don't drop the whole packet based on its value.
+    try:
+        _ = int(row[CSV_COLS.index("tau_max_setting")])
+    except Exception:
+        pass
+
+    # h10Mode should be small enum
+    try:
+        h10_mode = int(row[CSV_COLS.index("H10Mode")])
+        if not (0 <= h10_mode <= 10):
+            return False, f"h10Mode out of range ({h10_mode})"
+    except Exception:
+        return False, "H10Mode missing"
+
+    # Angles should be finite and within plausible degree range
+    for key in ("LeftThighAngle", "RightThighAngle", "LeftHipAngle", "RightHipAngle"):
+        try:
+            v = float(row[CSV_COLS.index(key)])
+            if not np.isfinite(v) or abs(v) > 360.0:
+                return False, f"{key} invalid ({v})"
+        except Exception:
+            return False, f"{key} missing"
+
+    # Torques: raw firmware units, expected to stay within [-20, 20].
+    for key in ("LeftHipTorque", "RightHipTorque"):
+        try:
+            v = float(row[CSV_COLS.index(key)])
+            if not np.isfinite(v):
+                return False, f"{key} invalid ({v})"
+            if v < -20.0 or v > 20.0:
+                return False, f"{key} out of range ({v})"
+        except Exception:
+            return False, f"{key} missing"
+
+    return True, ""
+
 DEFAULT_BAUD = 921600
 DEFAULT_TIMEOUT = 1.0  # sec
 
@@ -157,12 +245,12 @@ def decode_packet(data_tuple):
     #   [1..3] h10Mode, h10AssistLevel, SmartAssist (B,B,B)
     #   [4..24] 21 floats
     #   [25..30] 6 int32
-    #   [31..32] 2 uint8
-    #   [33..40] 8 floats (s_g_knn_conf 포함 + debug 7)
-    expected_tuple_len = struct.calcsize(STRUCT_FMT)  # bytes, used only for debugging sanity elsewhere
-    expected_elems = 4 + 21 + 6 + 2 + 10
+    #   [31..32] 2 uint8 (tau_max_setting, s_gait_mode)
+    #   [33]     float (s_g_knn_conf)
+    #   [34..41] 8 floats tail
+    expected_elems = 4 + 21 + 6 + 2 + 1 + 8
     if len(data_tuple) != expected_elems:
-        raise ValueError(f"Unexpected data length: {len(data_tuple)}")
+        raise ValueError(f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})")
 
     # Row must match CSV columns exactly.
     row = [0] * len(CSV_COLS)
@@ -187,12 +275,42 @@ def decode_packet(data_tuple):
     row[31] = int(data_tuple[base + 0])
     row[32] = int(data_tuple[base + 1])
 
-    # 4) 10 floats (s_g_knn_conf + swing + raw HC + norm/scaling)
+    # 4) s_g_knn_conf
     base = 4 + 21 + 6 + 2
-    for i in range(10):
-        row[33 + i] = float(data_tuple[base + i])
+    row[33] = float(data_tuple[base])
+
+    # 5) 8 floats tail
+    base = 4 + 21 + 6 + 2 + 1
+    for i in range(8):
+        row[34 + i] = float(data_tuple[base + i])
 
     return row
+
+
+def decode_payload_to_row(payload: bytes, last_good_row=None):
+    """Decode payload bytes into a CSV_COLS-aligned row.
+
+    This keeps existing GUI/plots/options stable while allowing the transport
+    layer to follow the firmware framing (SOF/len/CRC) even when the firmware
+    struct size changes.
+
+    Strategy:
+    - If payload matches PAYLOAD_SIZE exactly: decode with STRUCT_FMT.
+    - If payload is shorter: decode the prefix fields that fit, then pad missing
+      columns (floats->NaN, ints->forward-fill) using make_missing_row().
+    - If payload is longer: decode only the first PAYLOAD_SIZE bytes and ignore
+      trailing bytes (back/forward-compatible).
+    """
+    # Strict mode: only accept exact payload size.
+    if len(payload) != PAYLOAD_SIZE:
+        try:
+            next_loop = int(last_good_row[0]) + 1 if last_good_row is not None else 0
+        except Exception:
+            next_loop = 0
+        return make_missing_row(next_loop, last_good_row)
+
+    data_tuple = struct.unpack(STRUCT_FMT, payload)
+    return decode_packet(data_tuple)
 
 
 def row_to_csv_line(row):
@@ -341,6 +459,7 @@ def apply_modern_style(app: QtWidgets.QApplication):
 class SerialWorker(QtCore.QObject):
     data_received = pyqtSignal(list)
     status_msg = pyqtSignal(str)
+    debug_msg = pyqtSignal(str)
     finished = pyqtSignal()
     connection_failed = pyqtSignal(str)
     packet_error_count = pyqtSignal(int)   # 패킷 에러 누적 개수 신호
@@ -352,13 +471,33 @@ class SerialWorker(QtCore.QObject):
         self.timeout = timeout
         self._running = False
         self._error_count = 0
+        self._consecutive_packet_errors = 0
+        self._consecutive_sanity_failures = 0
         self._last_err_log_ts = 0.0
         self._err_log_interval_s = 1.0
+        self._err_window_s = 10.0
+        self._recent_errors = deque()  # deque[(ts, tag)]
         self._last_good_row = None
         self._last_valid_emit_ts = 0.0
         self._last_warn_ts = 0.0
         self._warn_interval_s = 2.0
+        self._no_valid_resync_s = 3.0
+        self._max_consecutive_packet_errors = 8
+        self._max_consecutive_sanity_failures = 3
         self._len_mismatch_seen = 0
+        self._sof_endian = "le"  # try little-endian first
+
+    def _find_sof_index(self, buf: bytearray) -> int:
+        """Return index of next plausible SOF bytes in buf, or -1 if not found."""
+        if len(buf) < 2:
+            return -1
+        idx_le = buf.find(SOF_BYTES_LE)
+        idx_be = buf.find(SOF_BYTES_BE)
+        if idx_le == -1:
+            return idx_be
+        if idx_be == -1:
+            return idx_le
+        return idx_le if idx_le < idx_be else idx_be
 
     def _log_packet_debug(self, sof: int, length: int, packet_len: int = None, recv_crc: int = None, calc_crc: int = None):
         """에러 상황에서만 len/CRC 등을 스로틀링해서 출력."""
@@ -371,20 +510,58 @@ class SerialWorker(QtCore.QObject):
             f"rx_sof=0x{sof:04X}",
             f"rx_len={length}",
             f"expected_len={EXPECTED_TOTAL_PACKET_SIZE}",
+            f"expected_payload={PAYLOAD_SIZE}",
         ]
         if packet_len is not None:
             parts.append(f"rx_bytes={packet_len}")
         if recv_crc is not None and calc_crc is not None:
             parts.append(f"crc_rx=0x{recv_crc:04X}")
             parts.append(f"crc_calc=0x{calc_crc:04X}")
-        self.status_msg.emit("Packet debug: " + ", ".join(parts))
+        msg = "Packet debug: " + ", ".join(parts)
+        self.status_msg.emit(msg)
+        self.debug_msg.emit(msg)
 
     def _inc_error(self, reason: str = ""):
         """패킷 검증 실패 시 호출 (누적 개수 증가 + 신호 송신)."""
         self._error_count += 1
         self.packet_error_count.emit(self._error_count)
         if reason:
-            self.status_msg.emit(f"Packet error #{self._error_count}: {reason}")
+            msg = f"Packet error #{self._error_count}: {reason}"
+            self.status_msg.emit(msg)
+            self.debug_msg.emit(msg)
+
+    def _record_error_tag(self, tag: str):
+        """Keep a rolling window of error categories for debugging/diagnostics."""
+        now = time.time()
+        self._recent_errors.append((now, tag))
+        cutoff = now - self._err_window_s
+        while self._recent_errors and self._recent_errors[0][0] < cutoff:
+            self._recent_errors.popleft()
+        # Emit a compact one-line summary via debug_msg (won't spam due to UI throttling on display side).
+        try:
+            counts = Counter(t for _, t in self._recent_errors)
+            parts = []
+            for key in ("crc", "payload", "unpack", "decode", "sanity", "innerlen"):
+                if counts.get(key, 0):
+                    parts.append(f"{key}:{counts[key]}")
+            # include len_mismatch separately
+            if self._len_mismatch_seen:
+                parts.append(f"len_mismatch:{self._len_mismatch_seen}")
+            if parts:
+                self.debug_msg.emit("Recent 10s errors: " + ", ".join(parts))
+        except Exception:
+            pass
+
+    def _flush_serial(self, ser: serial.Serial):
+        """Best-effort flush for reconnect/desync recovery."""
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        try:
+            ser.reset_output_buffer()
+        except Exception:
+            pass
 
     def _resync_drop_one_byte(self):
         """Framing resync helper (does NOT count as a packet error)."""
@@ -397,9 +574,17 @@ class SerialWorker(QtCore.QObject):
         ser = None
         try:
             try:
-                ser = serial.Serial(self.port_name, self.baudrate, timeout=self.timeout)
+                ser = serial.Serial(
+                    self.port_name,
+                    self.baudrate,
+                    timeout=self.timeout,
+                    write_timeout=0,
+                    exclusive=True,
+                )
                 self.status_msg.emit(f"Connected to {self.port_name}")
-                self.status_msg.emit(f"Expected total packet size: {EXPECTED_TOTAL_PACKET_SIZE} bytes")
+                self.status_msg.emit(
+                    f"Expected total packet size: {EXPECTED_TOTAL_PACKET_SIZE} bytes (also accepts {EXPECTED_TOTAL_PACKET_SIZE_V0} bytes)"
+                )
             except Exception as e:
                 err_msg = f"Serial open error: {e}"
                 self.status_msg.emit(err_msg)
@@ -413,11 +598,27 @@ class SerialWorker(QtCore.QObject):
             buf = bytearray()
             self._last_valid_emit_ts = time.time()
             self._last_warn_ts = self._last_valid_emit_ts
+            self._consecutive_packet_errors = 0
+            self._consecutive_sanity_failures = 0
+            self._len_mismatch_seen = 0
+            self._flush_serial(ser)
+
+            # Reduce latency on Windows USB-CDC adapters.
+            try:
+                ser.reset_input_buffer()
+            except Exception:
+                pass
 
             while self._running:
                 try:
-                    # 한 번에 조금 더 크게 읽어 효율/지터 개선 (256 → 512)
-                    chunk = ser.read(512)
+                    # Prefer non-blocking burst reads when possible.
+                    waiting = 0
+                    try:
+                        waiting = int(getattr(ser, "in_waiting", 0) or 0)
+                    except Exception:
+                        waiting = 0
+                    to_read = 2048 if waiting >= 2048 else (waiting if waiting > 0 else 512)
+                    chunk = ser.read(to_read)
                 except serial.SerialException as e:
                     self.status_msg.emit(f"Serial read error: {e}")
                     break
@@ -427,16 +628,37 @@ class SerialWorker(QtCore.QObject):
 
                 buf.extend(chunk)
 
-                # If we keep receiving bytes but decode nothing, give a periodic hint.
+                # If we received bytes but haven't produced a valid packet for a while,
+                # force a resync by clearing the buffer and flushing UART.
                 now = time.time()
+                if (now - self._last_valid_emit_ts) > self._no_valid_resync_s and len(buf) > (EXPECTED_TOTAL_PACKET_SIZE * 2):
+                    buf.clear()
+                    self._flush_serial(ser)
+                    self._consecutive_packet_errors = 0
+
+                # If we keep receiving bytes but decode nothing, give a periodic hint.
                 if (now - self._last_valid_emit_ts) > self._warn_interval_s and (now - self._last_warn_ts) > self._warn_interval_s:
                     if self._len_mismatch_seen > 0:
                         self.status_msg.emit(
-                            f"No valid packets yet. Len mismatch seen {self._len_mismatch_seen} times. Expected len={EXPECTED_TOTAL_PACKET_SIZE}."
+                            (
+                                f"No valid packets yet. Len mismatch seen {self._len_mismatch_seen} times. "
+                                + (
+                                    f"Expected len={EXPECTED_TOTAL_PACKET_SIZE} (or {EXPECTED_TOTAL_PACKET_SIZE_V0})."
+                                    if ALLOWED_TOTAL_PACKET_SIZES is not None
+                                    else "Accepting a range of lengths; waiting for a decodable packet..."
+                                )
+                            )
                         )
                     else:
                         self.status_msg.emit(
-                            f"No valid packets yet. Waiting for SOF=0x{SOF_VALUE:04X} and len={EXPECTED_TOTAL_PACKET_SIZE}..."
+                            (
+                                f"No valid packets yet. Waiting for SOF=0x{SOF_VALUE:04X} "
+                                + (
+                                    f"and len={EXPECTED_TOTAL_PACKET_SIZE} (or {EXPECTED_TOTAL_PACKET_SIZE_V0})..."
+                                    if ALLOWED_TOTAL_PACKET_SIZES is not None
+                                    else "and a sane length..."
+                                )
+                            )
                         )
                     self._last_warn_ts = now
 
@@ -446,29 +668,45 @@ class SerialWorker(QtCore.QObject):
                     if len(buf) < 4:
                         break
 
-                    # SOF 체크 (little-endian uint16)
-                    sof = buf[0] | (buf[1] << 8)
-                    if sof != SOF_VALUE:
-                        # 프레이밍 에러: 1바이트씩 밀면서 재동기화
-                        length_hint = (buf[2] | (buf[3] << 8)) if len(buf) >= 4 else 0
-                        self._log_packet_debug(sof=sof, length=length_hint)
-                        self._resync_drop_one_byte()
-                        del buf[0]
-                        continue
+                    # SOF scan/resync: jump to the next SOF signature (AA55 or 55AA)
+                    sof_idx = self._find_sof_index(buf)
+                    if sof_idx < 0:
+                        # No SOF in buffer; keep only the last 1 byte in case SOF spans reads.
+                        if len(buf) > 1:
+                            del buf[:-1]
+                        break
+                    if sof_idx > 0:
+                        del buf[:sof_idx]
+                        if len(buf) < 4:
+                            break
 
-                    # len 읽기
-                    length = buf[2] | (buf[3] << 8)
+                    # Determine endian by observed byte order
+                    if buf[:2] == SOF_BYTES_LE:
+                        self._sof_endian = "le"
+                    elif buf[:2] == SOF_BYTES_BE:
+                        self._sof_endian = "be"
+
+                    # Parse SOF value for debug
+                    sof = SOF_VALUE
+
+                    # len 읽기 (match the SOF endian)
+                    if self._sof_endian == "le":
+                        length = buf[2] | (buf[3] << 8)
+                    else:
+                        length = (buf[2] << 8) | buf[3]
 
                     # 길이 sanity check
-                    if length not in ALLOWED_TOTAL_PACKET_SIZES:
-                        # If 'length' looks unreasonable, resync quickly.
-                        # Valid packets should be within a compact range.
-                        if length < 8 or length > 2048:
-                            # resync only (do not count as packet error)
-                            pass
-                        else:
-                            # resync only (do not count as packet error)
-                            pass
+                    # - If ALLOWED_TOTAL_PACKET_SIZES is a set, require exact size match.
+                    # - If None, accept a sane range while still enforcing minimum size.
+                    if ALLOWED_TOTAL_PACKET_SIZES is not None:
+                        ok_len = (length in ALLOWED_TOTAL_PACKET_SIZES)
+                    else:
+                        # Accept a broad but sane range; deeper checks validate actual format.
+                        # This allows legacy firmwares that still send smaller frames (e.g., 159 bytes).
+                        ok_len = (8 <= length <= 2048)
+
+                    if not ok_len:
+                        # resync only (do not count as packet error)
                         self._len_mismatch_seen += 1
                         self._log_packet_debug(sof=sof, length=length)
                         del buf[0]
@@ -483,49 +721,93 @@ class SerialWorker(QtCore.QObject):
                     packet = bytes(buf[:length])
                     del buf[:length]
 
+                    # Extra internal consistency check: packet[2:4] should match the same length
+                    # (protects against accidental mis-alignment when SOF occurs inside payload).
+                    if self._sof_endian == "le":
+                        inner_len = packet[2] | (packet[3] << 8)
+                    else:
+                        inner_len = (packet[2] << 8) | packet[3]
+                    if inner_len != length:
+                        # Treat as bad packet (tick-based).
+                        had_error = True
+                        reason = f"Inner length mismatch (got {inner_len}, expected {length})"
+                        self._record_error_tag("innerlen")
+                        self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
+                        self._inc_error(reason)
+                        try:
+                            next_loop = int(self._last_good_row[0]) + 1 if self._last_good_row is not None else 0
+                        except Exception:
+                            next_loop = 0
+                        self.data_received.emit(make_missing_row(next_loop, self._last_good_row))
+                        continue
+
                     had_error = False
                     reason = ""
                     row = None
 
-                    # 1) 패킷 길이 검증
-                    if len(packet) != length:
-                        had_error = True
-                        reason = f"Packet size mismatch (got {len(packet)}, expected {length})"
-                        self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
-                    else:
-                        # 2) CRC 검증: sof~(crc 직전까지)
-                        data_without_crc = packet[:-2]
-                        recv_crc = packet[-2] | (packet[-1] << 8)
-                        calc_crc = crc16_modbus(data_without_crc)
+                    # 1) CRC 검증: sof~(crc 직전까지)
+                    data_without_crc = packet[:-2]
+                    recv_crc = packet[-2] | (packet[-1] << 8)
+                    calc_crc = crc16_modbus(data_without_crc)
 
-                        if recv_crc != calc_crc:
+                    if recv_crc != calc_crc:
+                        had_error = True
+                        reason = "CRC mismatch"
+                        self._record_error_tag("crc")
+                        self._log_packet_debug(sof=sof, length=length, packet_len=len(packet), recv_crc=recv_crc, calc_crc=calc_crc)
+                    else:
+                        # 2) payload 추출: [sof(2), len(2)] 이후 ~ crc 직전
+                        payload = packet[4:-2]
+
+                        # 3) payload size strict check: mismatch => count exactly 1 packet error
+                        if len(payload) != PAYLOAD_SIZE:
                             had_error = True
-                            reason = "CRC mismatch"
-                            self._log_packet_debug(sof=sof, length=length, packet_len=len(packet), recv_crc=recv_crc, calc_crc=calc_crc)
+                            reason = f"Payload size mismatch (got {len(payload)}, expected {PAYLOAD_SIZE})"
+                            self._record_error_tag("payload")
+                            self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
                         else:
-                            # 3) payload 추출: [sof(2), len(2)] 이후 ~ crc 직전
-                            payload = packet[4:-2]
-                            if len(payload) != PAYLOAD_SIZE:
+                            # 4) struct.unpack + decode
+                            try:
+                                row = decode_payload_to_row(payload, last_good_row=self._last_good_row)
+                            except struct.error as e:
                                 had_error = True
-                                reason = f"Payload size mismatch (got {len(payload)}, expected {PAYLOAD_SIZE})"
+                                reason = f"Struct unpack error: {e}"
+                                self._record_error_tag("unpack")
                                 self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
-                            else:
-                                # 4) struct.unpack + decode
-                                try:
-                                    data_tuple = struct.unpack(STRUCT_FMT, payload)
-                                    row = decode_packet(data_tuple)
-                                except struct.error as e:
+                            except ValueError as e:
+                                had_error = True
+                                reason = f"Decode error: {e}"
+                                self._record_error_tag("decode")
+                                self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
+
+                            if not had_error and row is not None:
+                                ok, why = sanity_check_row(row, self._last_good_row)
+                                if not ok:
                                     had_error = True
-                                    reason = f"Struct unpack error: {e}"
-                                    self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
-                                except ValueError as e:
-                                    had_error = True
-                                    reason = f"Decode error: {e}"
-                                    self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
+                                    reason = f"Sanity check failed: {why}"
+                                    self._record_error_tag("sanity")
+                                    self._consecutive_sanity_failures += 1
+                                else:
+                                    self._consecutive_sanity_failures = 0
 
                     # 5) 이 패킷에 에러가 하나라도 있었으면 1회만 카운트 (tick/packet-based)
                     if had_error:
                         self._inc_error(reason)
+                        self._consecutive_packet_errors += 1
+
+                        # Escalate faster on repeated sanity failures (often means struct misalignment / desync)
+                        if self._consecutive_sanity_failures >= self._max_consecutive_sanity_failures:
+                            buf.clear()
+                            self._flush_serial(ser)
+                            self._consecutive_packet_errors = 0
+                            self._consecutive_sanity_failures = 0
+
+                        # If we keep failing on whole packets, we are likely de-synced.
+                        # Clear buffer and flush serial to recover faster; avoid inflating error count.
+                        if self._consecutive_packet_errors >= self._max_consecutive_packet_errors:
+                            buf.clear()
+                            self._flush_serial(ser)
+                            self._consecutive_packet_errors = 0
                         # Mark this tick as missing: forward-fill ints, NaN for floats.
                         try:
                             next_loop = int(self._last_good_row[0]) + 1 if self._last_good_row is not None else 0
@@ -538,6 +820,8 @@ class SerialWorker(QtCore.QObject):
                     if row is not None:
                         self._last_good_row = row
                         self._last_valid_emit_ts = time.time()
+                        self._consecutive_packet_errors = 0
+                        self._consecutive_sanity_failures = 0
                         self.data_received.emit(row)
 
         finally:
@@ -876,6 +1160,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # 우측 상태 패널 위젯들
         self.state_labels = {}
         self.is_moving_indicator = None
+        self.debug_label = None
+        self._last_rx_len = None
+        self._recent_err_summary = None
 
         self._build_ui()
         self.refresh_ports()
@@ -943,6 +1230,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_connect = QtWidgets.QPushButton("Connect & Start Logging")
         self.btn_connect.clicked.connect(self.on_connect_clicked)
         top.addWidget(self.btn_connect)
+
+        self.btn_monitor_only = QtWidgets.QPushButton("Connect & Monitor Only")
+        self.btn_monitor_only.clicked.connect(self.on_monitor_only_clicked)
+        top.addWidget(self.btn_monitor_only)
 
         self.btn_disconnect = QtWidgets.QPushButton("Disconnect & Stop")
         self.btn_disconnect.clicked.connect(self.on_disconnect_clicked)
@@ -1052,6 +1343,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.error_label = QtWidgets.QLabel("Packet errors: 0")
         self.error_label.setFont(font)
         state_layout.addWidget(self.error_label)
+
+        # 지속적으로 남는 디버그/수신 상태 표시 (status bar는 금방 지나가서)
+        self.debug_label = QtWidgets.QLabel(
+            f"Expected total: {EXPECTED_TOTAL_PACKET_SIZE} bytes\n"
+            f"Expected payload: {PAYLOAD_SIZE} bytes\n"
+            "Last packet: -"
+        )
+        self.debug_label.setWordWrap(True)
+        self.debug_label.setStyleSheet("color: #374151;")
+        state_layout.addWidget(self.debug_label)
 
         # is_moving 신호등
         moving_row = QtWidgets.QHBoxLayout()
@@ -1218,6 +1519,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.serial_thread.started.connect(self.serial_worker.run)
         self.serial_worker.data_received.connect(self.on_data_received)
         self.serial_worker.status_msg.connect(self.on_status_msg)
+        self.serial_worker.debug_msg.connect(self.on_debug_msg)
         self.serial_worker.finished.connect(self.on_serial_finished)
         self.serial_worker.connection_failed.connect(self.on_connection_failed)
         self.serial_worker.packet_error_count.connect(self.on_packet_error_count)
@@ -1225,9 +1527,45 @@ class MainWindow(QtWidgets.QMainWindow):
         self.serial_thread.start()
 
         self.btn_connect.setEnabled(False)
+        self.btn_monitor_only.setEnabled(False)
         self.btn_disconnect.setEnabled(True)
         self.status_bar.showMessage(f"Connecting to {port_name} ...")
         # 에러 카운터 초기화
+        self.error_label.setText("Packet errors: 0")
+
+    def on_monitor_only_clicked(self):
+        port_name = self.combo_port.currentText()
+        if not port_name or port_name == "(no ports)":
+            QtWidgets.QMessageBox.warning(self, "Warning", "No serial port selected.")
+            return
+        if self.serial_thread is not None:
+            QtWidgets.QMessageBox.information(self, "Info", "Already connected.")
+            return
+
+        # Monitor-only mode: do not open any CSV log file.
+        self.log_file = None
+        self._pending_lines = []
+        self._written_lines = 0
+        self._last_log_path = None
+
+        self.serial_thread = QtCore.QThread()
+        self.serial_worker = SerialWorker(port_name, DEFAULT_BAUD, DEFAULT_TIMEOUT)
+        self.serial_worker.moveToThread(self.serial_thread)
+
+        self.serial_thread.started.connect(self.serial_worker.run)
+        self.serial_worker.data_received.connect(self.on_data_received)
+        self.serial_worker.status_msg.connect(self.on_status_msg)
+        self.serial_worker.debug_msg.connect(self.on_debug_msg)
+        self.serial_worker.finished.connect(self.on_serial_finished)
+        self.serial_worker.connection_failed.connect(self.on_connection_failed)
+        self.serial_worker.packet_error_count.connect(self.on_packet_error_count)
+
+        self.serial_thread.start()
+
+        self.btn_connect.setEnabled(False)
+        self.btn_monitor_only.setEnabled(False)
+        self.btn_disconnect.setEnabled(True)
+        self.status_bar.showMessage(f"Connecting to {port_name} (monitor only) ...")
         self.error_label.setText("Packet errors: 0")
 
     def on_disconnect_clicked(self):
@@ -1370,6 +1708,51 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_bar.showMessage(msg)
 
     @pyqtSlot(str)
+    def on_debug_msg(self, msg):
+        if self.debug_label is None:
+            return
+
+        # Persistently capture rolling error summary.
+        try:
+            if isinstance(msg, str) and msg.startswith("Recent 10s errors:"):
+                self._recent_err_summary = msg
+        except Exception:
+            pass
+
+        # Extract rx_len if present.
+        try:
+            import re
+            m = re.search(r"rx_len=(\d+)", msg)
+            if m:
+                self._last_rx_len = int(m.group(1))
+        except Exception:
+            pass
+
+        expected_total = EXPECTED_TOTAL_PACKET_SIZE
+        expected_payload = PAYLOAD_SIZE
+        expected_total_from_payload = expected_payload + 6  # sof(2)+len(2)+crc(2)
+
+        lines = [
+            f"Expected total: {expected_total} bytes",
+            f"Expected payload: {expected_payload} bytes",
+            f"(Payload->Total): {expected_total_from_payload} bytes",
+        ]
+
+        if self._recent_err_summary:
+            lines.append(self._recent_err_summary)
+        if self._last_rx_len is not None:
+            rx = self._last_rx_len
+            lines.append(f"Last rx_len: {rx} bytes")
+            # Interpretations of what rx_len might represent in firmware
+            lines.append(f"If rx_len is TOTAL, missing={expected_total - rx} bytes")
+            lines.append(f"If rx_len is PAYLOAD, missing={expected_payload - rx} bytes")
+            lines.append(f"If rx_len is TOTAL-4(header), missing={(expected_total - 4) - rx} bytes")
+            lines.append(f"If rx_len is TOTAL-2(crc), missing={(expected_total - 2) - rx} bytes")
+
+        lines.append(f"Last: {msg}")
+        self.debug_label.setText("\n".join(lines))
+
+    @pyqtSlot(str)
     def on_connection_failed(self, msg):
         self._close_log_file()
         QtWidgets.QMessageBox.critical(self, "Serial Connection Failed", msg)
@@ -1388,11 +1771,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 버튼 상태
         self.btn_connect.setEnabled(True)
+        self.btn_monitor_only.setEnabled(True)
         self.btn_disconnect.setEnabled(False)
         self.status_bar.showMessage("Disconnected")
 
-        # 저장된 최신 CSV 열어 리뷰 뷰어 표시
-        self._open_review_viewer()
+        # 저장된 최신 CSV 열어 리뷰 뷰어 표시 (monitor-only면 파일 없음)
+        if self._last_log_path:
+            self._open_review_viewer()
 
     @pyqtSlot(int)
     def on_packet_error_count(self, n):
