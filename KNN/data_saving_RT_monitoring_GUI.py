@@ -56,7 +56,7 @@ FLUSH_EVERY = 500               # CSV 라인 500개 모을 때마다 디스크�
 #     uint8_t s_gait_mode;
 #     float   s_g_knn_conf;
 #
-#     float T_cycle_ms;
+#     float T_swing_ms;
 #     float s_norm_vel_HC;
 #     float s_norm_T_HC;
 #     float s_scaling_X;
@@ -74,8 +74,8 @@ SOF_VALUE = 0xAA55
 #   int32  6개 (is_moving, hc_count, R/L upeak, R/L dpeak)
 #   uint8  2개 (tau_max_setting, s_gait_mode)
 #   float  1개 (s_g_knn_conf)
-#   float  5개 (T_cycle_ms, s_norm_vel_HC, s_norm_T_HC, s_scaling_X, s_scaling_Y)
-STRUCT_FMT = '<IBBB21f6iBB6f'
+#   float  9개 (s_g_knn_conf + T_swing_ms/SOS/STS + s_vel_HC + s_T_HC_s + norm/scaling)
+STRUCT_FMT = '<IBBB21f6iBB10f'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
 # 전체 패킷 예상 길이: sof(2) + len(2) + payload + crc(2)
@@ -91,7 +91,9 @@ CSV_HEADER = (
     "RightHipImuGlobalGyrX,RightHipImuGlobalGyrY,RightHipImuGlobalGyrZ,"
     "is_moving,hc_count,R_count_upeak,L_count_upeak,R_count_dpeak,L_count_dpeak,"
     "tau_max_setting,s_gait_mode,s_g_knn_conf,"
-    "T_cycle_ms,s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y"
+    "T_swing_ms,T_swing_SOS_ms,T_swing_STS_ms,"
+    "s_vel_HC,s_T_HC_s,"
+    "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y"
 )
 CSV_COLS = CSV_HEADER.split(",")
 
@@ -121,34 +123,41 @@ def decode_packet(data_tuple):
     #   [0] loopCnt (I)
     #   [1..3] h10Mode, h10AssistLevel, SmartAssist (B,B,B)
     #   [4..24] 21 floats
-    #   [38..43] 6 int32
-    #   [44..45] 2 uint8
-    #   [46..51] 6 floats (s_g_knn_conf 포함 + debug 5)
-    expected_len = 52
-    if len(data_tuple) != expected_len:
+    #   [25..30] 6 int32
+    #   [31..32] 2 uint8
+    #   [33..40] 8 floats (s_g_knn_conf 포함 + debug 7)
+    expected_tuple_len = struct.calcsize(STRUCT_FMT)  # bytes, used only for debugging sanity elsewhere
+    expected_elems = 4 + 21 + 6 + 2 + 10
+    if len(data_tuple) != expected_elems:
         raise ValueError(f"Unexpected data length: {len(data_tuple)}")
 
-    row = [0] * expected_len
+    # Row must match CSV columns exactly.
+    row = [0] * len(CSV_COLS)
+
+    # 0) header-ish fields
     row[0] = int(data_tuple[0])
     row[1] = int(data_tuple[1])
     row[2] = int(data_tuple[2])
     row[3] = int(data_tuple[3])
 
-    # floats(21): CSV_COLS[4..24]
-    for i in range(4, 25):
-        row[i] = float(data_tuple[i])
+    # 1) 21 floats
+    for i in range(21):
+        row[4 + i] = float(data_tuple[4 + i])
 
-    # int32(6): CSV_COLS[25..30]
-    for i in range(25, 31):
-        row[i] = int(data_tuple[i])
+    # 2) 6 int32
+    base = 4 + 21
+    for i in range(6):
+        row[25 + i] = int(data_tuple[base + i])
 
-    # uint8(2): CSV_COLS[31..32]
-    row[31] = int(data_tuple[31])  # tau_max_setting
-    row[32] = int(data_tuple[32])  # s_gait_mode
+    # 3) 2 uint8
+    base = 4 + 21 + 6
+    row[31] = int(data_tuple[base + 0])
+    row[32] = int(data_tuple[base + 1])
 
-    # floats(6): CSV_COLS[33..38]
-    for i in range(33, 39):
-        row[i] = float(data_tuple[i])
+    # 4) 10 floats (s_g_knn_conf + swing + raw HC + norm/scaling)
+    base = 4 + 21 + 6 + 2
+    for i in range(10):
+        row[33 + i] = float(data_tuple[base + i])
 
     return row
 
@@ -310,6 +319,27 @@ class SerialWorker(QtCore.QObject):
         self.timeout = timeout
         self._running = False
         self._error_count = 0
+        self._last_err_log_ts = 0.0
+        self._err_log_interval_s = 1.0
+
+    def _log_packet_debug(self, sof: int, length: int, packet_len: int = None, recv_crc: int = None, calc_crc: int = None):
+        """에러 상황에서만 len/CRC 등을 스로틀링해서 출력."""
+        now = time.time()
+        if (now - self._last_err_log_ts) < self._err_log_interval_s:
+            return
+        self._last_err_log_ts = now
+
+        parts = [
+            f"rx_sof=0x{sof:04X}",
+            f"rx_len={length}",
+            f"expected_len={EXPECTED_TOTAL_PACKET_SIZE}",
+        ]
+        if packet_len is not None:
+            parts.append(f"rx_bytes={packet_len}")
+        if recv_crc is not None and calc_crc is not None:
+            parts.append(f"crc_rx=0x{recv_crc:04X}")
+            parts.append(f"crc_calc=0x{calc_crc:04X}")
+        self.status_msg.emit("Packet debug: " + ", ".join(parts))
 
     def _inc_error(self, reason: str = ""):
         """패킷 검증 실패 시 호출 (누적 개수 증가 + 신호 송신)."""
@@ -366,6 +396,8 @@ class SerialWorker(QtCore.QObject):
                     if sof != SOF_VALUE:
                         # 프레이밍 에러: 1바이트씩 밀면서 재동기화
                         self._inc_error("SOF mismatch - resync")
+                        length_hint = (buf[2] | (buf[3] << 8)) if len(buf) >= 4 else 0
+                        self._log_packet_debug(sof=sof, length=length_hint)
                         del buf[0]
                         continue
 
@@ -375,6 +407,7 @@ class SerialWorker(QtCore.QObject):
                     # 길이 sanity check
                     if length != EXPECTED_TOTAL_PACKET_SIZE:
                         self._inc_error(f"Length mismatch (got {length}, expected {EXPECTED_TOTAL_PACKET_SIZE})")
+                        self._log_packet_debug(sof=sof, length=length)
                         del buf[0]
                         continue
 
@@ -395,6 +428,7 @@ class SerialWorker(QtCore.QObject):
                     if len(packet) != EXPECTED_TOTAL_PACKET_SIZE:
                         had_error = True
                         reason = f"Packet size mismatch (got {len(packet)}, expected {EXPECTED_TOTAL_PACKET_SIZE})"
+                        self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
                     else:
                         # 2) CRC 검증: sof~(crc 직전까지)
                         data_without_crc = packet[:-2]
@@ -404,12 +438,14 @@ class SerialWorker(QtCore.QObject):
                         if recv_crc != calc_crc:
                             had_error = True
                             reason = "CRC mismatch"
+                            self._log_packet_debug(sof=sof, length=length, packet_len=len(packet), recv_crc=recv_crc, calc_crc=calc_crc)
                         else:
                             # 3) payload 추출: [sof(2), len(2)] 이후 ~ crc 직전
                             payload = packet[4:-2]
                             if len(payload) != PAYLOAD_SIZE:
                                 had_error = True
                                 reason = f"Payload size mismatch (got {len(payload)}, expected {PAYLOAD_SIZE})"
+                                self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
                             else:
                                 # 4) struct.unpack + decode
                                 try:
@@ -418,9 +454,11 @@ class SerialWorker(QtCore.QObject):
                                 except struct.error as e:
                                     had_error = True
                                     reason = f"Struct unpack error: {e}"
+                                    self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
                                 except ValueError as e:
                                     had_error = True
                                     reason = f"Decode error: {e}"
+                                    self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
 
                     # 5) 이 패킷에 에러가 하나라도 있었으면 1회만 카운트
                     if had_error:
@@ -476,7 +514,9 @@ class CsvReviewDialog(QtWidgets.QDialog):
             ["TrunkIMU_LocalGyrX","TrunkIMU_LocalGyrY","TrunkIMU_LocalGyrZ"],  # 5
             ["TrunkIMU_QuatW","TrunkIMU_QuatX","TrunkIMU_QuatY","TrunkIMU_QuatZ"],  # 6
             ["is_moving", "hc_count", "R_count_upeak", "L_count_upeak", "R_count_dpeak", "L_count_dpeak"],  # 7
-            ["tau_max_setting", "s_gait_mode", "s_g_knn_conf", "T_cycle_ms", "s_norm_vel_HC", "s_norm_T_HC"],  # 8
+              ["tau_max_setting", "s_gait_mode", "s_g_knn_conf",
+               "T_swing_ms", "T_swing_SOS_ms", "T_swing_STS_ms",
+               "s_vel_HC", "s_T_HC_s", "s_norm_vel_HC", "s_norm_T_HC"],  # 8
         ]
 
         # 데이터 로드
@@ -756,8 +796,8 @@ class MainWindow(QtWidgets.QMainWindow):
         g1 = ["LeftThighAngle", "RightThighAngle"]
         # 2) 좌/우 hip torque
         g2 = ["LeftHipTorque", "RightHipTorque"]
-        # 3) T_cycle_ms
-        g3 = ["T_cycle_ms"]
+        # 3) T_swing: mean + SOS/STS buckets
+        g3 = ["T_swing_ms", "T_swing_SOS_ms", "T_swing_STS_ms"]
         # 4) scatter: (s_norm_vel_HC, s_norm_T_HC) at hc_count increments
         g4 = []
         self.plot_groups = [g1, g2, g3, g4]

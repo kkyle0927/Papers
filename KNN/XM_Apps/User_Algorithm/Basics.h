@@ -64,7 +64,11 @@ typedef struct __attribute__((packed)) {
     float   s_g_knn_conf;
 
     // KNN normalization / cycle period (debug/analysis)
-    float T_cycle_ms;
+    float T_swing_ms;
+    float T_swing_SOS_ms;
+    float T_swing_STS_ms;
+    float s_vel_HC;
+    float s_T_HC_s;
     float s_norm_vel_HC;
     float s_norm_T_HC;
     float s_scaling_X;
@@ -104,7 +108,11 @@ extern volatile GaitMode_t s_gait_mode;
 extern volatile float s_g_knn_conf;
 
 // From KNN.c (KNN normalization/cycle debug)
-extern volatile float T_cycle_ms;
+extern volatile float T_swing_ms;
+extern volatile float T_swing_SOS_ms;
+extern volatile float T_swing_STS_ms;
+extern volatile float s_vel_HC_dbg;
+extern volatile float s_T_HC_s_dbg;
 extern volatile float s_dbg_norm_vel_HC;
 extern volatile float s_dbg_norm_T_HC;
 extern volatile float s_dbg_scaling_X;

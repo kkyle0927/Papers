@@ -186,10 +186,21 @@ static float s_var = 0.0f;
 static float s_R_time_afterup_ms = 0.0f;
 static float s_L_time_afterup_ms = 0.0f;
 static float s_HC_time_after_ms = 0.0f;
+// Normalization swing period (ms): uses mean of latest SOS/STS swing times.
 static float s_swing_period_ms = 400.0f;
 
-// Debug-visible cycle period (ms). Mirrors s_swing_period_ms for Live Expressions.
-volatile float T_cycle_ms = 400.0f;
+// Track swing time separately by classification category (no left/right split).
+static float s_T_swing_SOS_ms = 400.0f;
+static float s_T_swing_STS_ms = 400.0f;
+static bool s_last_HC_class_is_valid = false;
+static bool s_last_HC_is_STS = false;
+
+// Debug-visible normalization swing period (ms). Mirrors s_swing_period_ms for Live Expressions.
+volatile float T_swing_ms = 400.0f;
+
+// Debug-visible latest swing times by class (ms).
+volatile float T_swing_SOS_ms = 400.0f;
+volatile float T_swing_STS_ms = 400.0f;
 
 static float s_vel_HC = 0.0f;
 static float s_R_swing_time_ms = 0.0f;
@@ -197,6 +208,10 @@ static float s_L_swing_time_ms = 0.0f;
 static float s_T_HC_ms = 0.0f;
 static float s_norm_vel_HC = 0.0f;
 static float s_norm_T_HC = 0.0f;
+
+// Debug-visible raw HC feature values.
+volatile float s_vel_HC_dbg = 0.0f;
+volatile float s_T_HC_s_dbg = 0.0f;
 
 static float s_scaling_X = 105.6426f;
 static float s_scaling_Y = 835.8209f;
@@ -340,11 +355,7 @@ void User_Setup(void)
     };
     XM_TSM_AddState(s_userHandle, &act_conf);
 
-    XM_SetPinMode(XM_EXT_DIO_3, XM_EXT_DIO_MODE_INPUT_PULLDOWN);
-
-    // SYNC 초기값
-    sync_signal = XM_LOW;
-	sync_signal_pre = XM_LOW;
+    // XM_SetPinMode(XM_EXT_DIO_3, XM_EXT_DIO_MODE_INPUT_PULLDOWN);
 
     FVecDecoder_Init();
 }
@@ -392,7 +403,7 @@ static void Disconnected_Loop(void)
 static void Standby_Entry(void)
 {
 	// XSENS IMU 부팅 시간 확보 (전원 인가 후 최소 150ms 필요)
-    HAL_Delay(150);
+    HAL_Delay(250);
     XM_SetControlMode(XM_CTRL_MONITOR);
 }
 
@@ -708,6 +719,9 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             s_vel_HC = (s_Rdeg[2] - s_Rdeg[1]) / (CTRL_DT_MS * 0.001f);
             s_T_HC_ms = s_R_swing_time_ms;
 
+            s_vel_HC_dbg = s_vel_HC;
+            s_T_HC_s_dbg = s_T_HC_ms * 0.001f;
+
             const float swing_period_s = s_swing_period_ms * 0.001f;
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
             s_norm_T_HC = ((s_T_HC_ms * 0.001f) / swing_period_s) / s_scaling_Y;
@@ -721,6 +735,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
                                                         s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
             s_gait_mode = (knn_label == 1) ? RSTS : RSOS;
             s_gait_mode_latch_leg = GAIT_LATCH_R;
+
+            // Remember the most recent HC classification (ignore left/right).
+            s_last_HC_class_is_valid = true;
+            s_last_HC_is_STS = (s_gait_mode == RSTS);
             if (s_gait_mode == RSTS) {
                 Rstop_assist = true;
             }
@@ -728,6 +746,9 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             s_HC_Lswing4upcond = true;
             s_vel_HC = (s_Ldeg[2] - s_Ldeg[1]) / (CTRL_DT_MS * 0.001f);
             s_T_HC_ms = s_L_swing_time_ms;
+
+            s_vel_HC_dbg = s_vel_HC;
+            s_T_HC_s_dbg = s_T_HC_ms * 0.001f;
 
             const float swing_period_s = s_swing_period_ms * 0.001f;
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
@@ -742,6 +763,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
                                                         s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
             s_gait_mode = (knn_label == 1) ? LSTS : LSOS;
             s_gait_mode_latch_leg = GAIT_LATCH_L;
+
+            // Remember the most recent HC classification (ignore left/right).
+            s_last_HC_class_is_valid = true;
+            s_last_HC_is_STS = (s_gait_mode == LSTS);
             if (s_gait_mode == LSTS) {
                 Lstop_assist = true;
             }
@@ -755,8 +780,24 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         s_R_uppeak_val = s_Rdeg[2];
         s_R_time_upcond = false;
         R_count_upeak++;
-        s_swing_period_ms = s_R_swing_time_ms;
-        T_cycle_ms = s_swing_period_ms;
+
+        // Measured swing time: from lower peak reset to this upper peak.
+        const float measured_swing_ms = s_R_swing_time_ms;
+
+        // Store to SOS/STS bucket based on the most recent HC classification.
+        if (s_last_HC_class_is_valid) {
+            if (s_last_HC_is_STS) {
+                s_T_swing_STS_ms = measured_swing_ms;
+                T_swing_STS_ms = s_T_swing_STS_ms;
+            } else {
+                s_T_swing_SOS_ms = measured_swing_ms;
+                T_swing_SOS_ms = s_T_swing_SOS_ms;
+            }
+        }
+
+        // Normalization uses mean of latest SOS/STS swing times.
+        s_swing_period_ms = 0.5f * (s_T_swing_SOS_ms + s_T_swing_STS_ms);
+        T_swing_ms = s_swing_period_ms;
         s_R_time_afterup_ms = 0.0f;
         s_HC_Rswing4upcond = false;
 
@@ -773,8 +814,24 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         s_L_uppeak_val = s_Ldeg[2];
         s_L_time_upcond = false;
         L_count_upeak++;
-        s_swing_period_ms = s_L_swing_time_ms;
-        T_cycle_ms = s_swing_period_ms;
+
+        // Measured swing time: from lower peak reset to this upper peak.
+        const float measured_swing_ms = s_L_swing_time_ms;
+
+        // Store to SOS/STS bucket based on the most recent HC classification.
+        if (s_last_HC_class_is_valid) {
+            if (s_last_HC_is_STS) {
+                s_T_swing_STS_ms = measured_swing_ms;
+                T_swing_STS_ms = s_T_swing_STS_ms;
+            } else {
+                s_T_swing_SOS_ms = measured_swing_ms;
+                T_swing_SOS_ms = s_T_swing_SOS_ms;
+            }
+        }
+
+        // Normalization uses mean of latest SOS/STS swing times.
+        s_swing_period_ms = 0.5f * (s_T_swing_SOS_ms + s_T_swing_STS_ms);
+        T_swing_ms = s_swing_period_ms;
         s_L_time_afterup_ms = 0.0f;
         s_HC_Lswing4upcond = false;
 

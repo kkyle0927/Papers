@@ -56,7 +56,11 @@ void FillAndSendSavingData(void)
     SavingData.s_gait_mode = (uint8_t)s_gait_mode;
     SavingData.s_g_knn_conf    = (float)s_g_knn_conf;
 
-    SavingData.T_cycle_ms     = (float)T_cycle_ms;
+    SavingData.T_swing_ms     = (float)T_swing_ms;
+    SavingData.T_swing_SOS_ms = (float)T_swing_SOS_ms;
+    SavingData.T_swing_STS_ms = (float)T_swing_STS_ms;
+    SavingData.s_vel_HC       = (float)s_vel_HC_dbg;
+    SavingData.s_T_HC_s       = (float)s_T_HC_s_dbg;
     SavingData.s_norm_vel_HC  = (float)s_dbg_norm_vel_HC;
     SavingData.s_norm_T_HC    = (float)s_dbg_norm_T_HC;
     SavingData.s_scaling_X    = (float)s_dbg_scaling_X;
