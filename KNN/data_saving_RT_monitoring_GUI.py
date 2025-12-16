@@ -355,6 +355,10 @@ class SerialWorker(QtCore.QObject):
         self._last_err_log_ts = 0.0
         self._err_log_interval_s = 1.0
         self._last_good_row = None
+        self._last_valid_emit_ts = 0.0
+        self._last_warn_ts = 0.0
+        self._warn_interval_s = 2.0
+        self._len_mismatch_seen = 0
 
     def _log_packet_debug(self, sof: int, length: int, packet_len: int = None, recv_crc: int = None, calc_crc: int = None):
         """에러 상황에서만 len/CRC 등을 스로틀링해서 출력."""
@@ -407,6 +411,8 @@ class SerialWorker(QtCore.QObject):
             # If you still need start/stop commands for other firmware, you can re-enable it.
 
             buf = bytearray()
+            self._last_valid_emit_ts = time.time()
+            self._last_warn_ts = self._last_valid_emit_ts
 
             while self._running:
                 try:
@@ -420,6 +426,19 @@ class SerialWorker(QtCore.QObject):
                     continue
 
                 buf.extend(chunk)
+
+                # If we keep receiving bytes but decode nothing, give a periodic hint.
+                now = time.time()
+                if (now - self._last_valid_emit_ts) > self._warn_interval_s and (now - self._last_warn_ts) > self._warn_interval_s:
+                    if self._len_mismatch_seen > 0:
+                        self.status_msg.emit(
+                            f"No valid packets yet. Len mismatch seen {self._len_mismatch_seen} times. Expected len={EXPECTED_TOTAL_PACKET_SIZE}."
+                        )
+                    else:
+                        self.status_msg.emit(
+                            f"No valid packets yet. Waiting for SOF=0x{SOF_VALUE:04X} and len={EXPECTED_TOTAL_PACKET_SIZE}..."
+                        )
+                    self._last_warn_ts = now
 
                 # 가능한 한 많이 패킷 파싱
                 while True:
@@ -450,6 +469,7 @@ class SerialWorker(QtCore.QObject):
                         else:
                             # resync only (do not count as packet error)
                             pass
+                        self._len_mismatch_seen += 1
                         self._log_packet_debug(sof=sof, length=length)
                         del buf[0]
                         continue
@@ -517,6 +537,7 @@ class SerialWorker(QtCore.QObject):
                     # 6) 정상 패킷이면 row emit
                     if row is not None:
                         self._last_good_row = row
+                        self._last_valid_emit_ts = time.time()
                         self.data_received.emit(row)
 
         finally:
@@ -1016,10 +1037,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # ---- 우측: 상태 패널 ----
         state_box = QtWidgets.QGroupBox("States")
         state_layout = QtWidgets.QVBoxLayout(state_box)
+        state_layout.setContentsMargins(12, 12, 12, 12)
+        state_layout.setSpacing(10)
         content.addWidget(state_box, stretch=0)
 
-        # 통신/모드 상태 (기존 라벨 유지)
-        self.mode_label = QtWidgets.QLabel("H10Mode: -,  H10AssistLevel: -,  SmartAssist: -")
+        # 통신/모드 상태
+        self.mode_label = QtWidgets.QLabel("H10Mode: -")
         font = self.mode_label.font()
         font.setPointSize(font.pointSize() + 2)
         font.setBold(True)
@@ -1032,6 +1055,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # is_moving 신호등
         moving_row = QtWidgets.QHBoxLayout()
+        moving_row.setSpacing(10)
         moving_row.addWidget(QtWidgets.QLabel("is_moving:"))
         self.is_moving_indicator = QtWidgets.QLabel("●")
         ind_font = self.is_moving_indicator.font()
@@ -1229,7 +1253,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         try:
             self.mode_label.setText(
-                f"H10Mode: {int(row[1])},  H10AssistLevel: {int(row[2])},  SmartAssist: {int(row[3])}"
+                f"H10Mode: {int(row[1])}"
             )
         except Exception:
             pass
