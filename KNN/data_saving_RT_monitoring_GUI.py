@@ -1286,7 +1286,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_widgets[0].setYRange(-30.0, 90.0, padding=0.0)
 
         # Plot2: hip torque -> -20 ~ 20 (유지)
-        self.plot_widgets[1].setYRange(-20.0, 20.0, padding=0.0)
+        self.plot_widgets[1].setYRange(-10.0, 10.0, padding=0.0)
 
         # Plot3: T_swing_ms etc -> 기존 0~700에서 0~1000으로 변경
         self.plot_widgets[2].setYRange(0.0, 1000.0, padding=0.0)
