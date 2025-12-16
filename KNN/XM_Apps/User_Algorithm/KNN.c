@@ -355,7 +355,7 @@ void User_Setup(void)
     };
     XM_TSM_AddState(s_userHandle, &act_conf);
 
-    // XM_SetPinMode(XM_EXT_DIO_3, XM_EXT_DIO_MODE_INPUT_PULLDOWN);
+    XM_SetPinMode(XM_EXT_DIO_3, XM_EXT_DIO_MODE_INPUT_PULLDOWN);
 
     FVecDecoder_Init();
 }

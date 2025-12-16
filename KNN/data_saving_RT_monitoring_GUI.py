@@ -81,6 +81,11 @@ PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 # 전체 패킷 예상 길이: sof(2) + len(2) + payload + crc(2)
 EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2
 
+# Some firmware builds may send an older/newer SavingData_t size.
+# We accept packets whose internal len matches any of these allowed sizes.
+# Keep EXPECTED_TOTAL_PACKET_SIZE as the primary target.
+ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
+
 CSV_HEADER = (
     "LoopCnt,H10Mode,H10AssistLevel,SmartAssist,"
     "LeftHipAngle,RightHipAngle,LeftThighAngle,RightThighAngle,"
@@ -96,6 +101,34 @@ CSV_HEADER = (
     "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y"
 )
 CSV_COLS = CSV_HEADER.split(",")
+
+
+def make_missing_row(loop_cnt: int, last_row=None):
+    """Create a placeholder row for a missed/invalid packet.
+
+    - Float-like fields become NaN so they can be interpolated later.
+    - Integer-like fields are set to the previous value (forward-fill) when available,
+      otherwise 0.
+    """
+    row = [float("nan")] * len(CSV_COLS)
+    row[0] = int(loop_cnt)
+
+    int_indices = {0, 1, 2, 3, 25, 26, 27, 28, 29, 30, 31, 32}
+    if last_row is None:
+        for idx in int_indices:
+            if idx == 0:
+                continue
+            row[idx] = 0
+        return row
+
+    for idx in int_indices:
+        if idx == 0:
+            continue
+        try:
+            row[idx] = int(last_row[idx])
+        except Exception:
+            row[idx] = 0
+    return row
 
 DEFAULT_BAUD = 921600
 DEFAULT_TIMEOUT = 1.0  # sec
@@ -321,6 +354,7 @@ class SerialWorker(QtCore.QObject):
         self._error_count = 0
         self._last_err_log_ts = 0.0
         self._err_log_interval_s = 1.0
+        self._last_good_row = None
 
     def _log_packet_debug(self, sof: int, length: int, packet_len: int = None, recv_crc: int = None, calc_crc: int = None):
         """에러 상황에서만 len/CRC 등을 스로틀링해서 출력."""
@@ -348,6 +382,11 @@ class SerialWorker(QtCore.QObject):
         if reason:
             self.status_msg.emit(f"Packet error #{self._error_count}: {reason}")
 
+    def _resync_drop_one_byte(self):
+        """Framing resync helper (does NOT count as a packet error)."""
+        # Intentionally no _inc_error here: byte-level desync may happen many times per single bad packet.
+        return
+
     @pyqtSlot()
     def run(self):
         self._running = True
@@ -364,11 +403,8 @@ class SerialWorker(QtCore.QObject):
                 return
 
             # 모니터링 시작 명령
-            try:
-                ser.write(b"AGRB MON START")
-                self.status_msg.emit("Sent: AGRB MON START")
-            except Exception as e:
-                self.status_msg.emit(f"Failed to send start cmd: {e}")
+            # NOTE: Firmware may stream continuously without any start command.
+            # If you still need start/stop commands for other firmware, you can re-enable it.
 
             buf = bytearray()
 
@@ -395,9 +431,9 @@ class SerialWorker(QtCore.QObject):
                     sof = buf[0] | (buf[1] << 8)
                     if sof != SOF_VALUE:
                         # 프레이밍 에러: 1바이트씩 밀면서 재동기화
-                        self._inc_error("SOF mismatch - resync")
                         length_hint = (buf[2] | (buf[3] << 8)) if len(buf) >= 4 else 0
                         self._log_packet_debug(sof=sof, length=length_hint)
+                        self._resync_drop_one_byte()
                         del buf[0]
                         continue
 
@@ -405,8 +441,15 @@ class SerialWorker(QtCore.QObject):
                     length = buf[2] | (buf[3] << 8)
 
                     # 길이 sanity check
-                    if length != EXPECTED_TOTAL_PACKET_SIZE:
-                        self._inc_error(f"Length mismatch (got {length}, expected {EXPECTED_TOTAL_PACKET_SIZE})")
+                    if length not in ALLOWED_TOTAL_PACKET_SIZES:
+                        # If 'length' looks unreasonable, resync quickly.
+                        # Valid packets should be within a compact range.
+                        if length < 8 or length > 2048:
+                            # resync only (do not count as packet error)
+                            pass
+                        else:
+                            # resync only (do not count as packet error)
+                            pass
                         self._log_packet_debug(sof=sof, length=length)
                         del buf[0]
                         continue
@@ -425,9 +468,9 @@ class SerialWorker(QtCore.QObject):
                     row = None
 
                     # 1) 패킷 길이 검증
-                    if len(packet) != EXPECTED_TOTAL_PACKET_SIZE:
+                    if len(packet) != length:
                         had_error = True
-                        reason = f"Packet size mismatch (got {len(packet)}, expected {EXPECTED_TOTAL_PACKET_SIZE})"
+                        reason = f"Packet size mismatch (got {len(packet)}, expected {length})"
                         self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
                     else:
                         # 2) CRC 검증: sof~(crc 직전까지)
@@ -460,21 +503,27 @@ class SerialWorker(QtCore.QObject):
                                     reason = f"Decode error: {e}"
                                     self._log_packet_debug(sof=sof, length=length, packet_len=len(packet))
 
-                    # 5) 이 패킷에 에러가 하나라도 있었으면 1회만 카운트
+                    # 5) 이 패킷에 에러가 하나라도 있었으면 1회만 카운트 (tick/packet-based)
                     if had_error:
                         self._inc_error(reason)
+                        # Mark this tick as missing: forward-fill ints, NaN for floats.
+                        try:
+                            next_loop = int(self._last_good_row[0]) + 1 if self._last_good_row is not None else 0
+                        except Exception:
+                            next_loop = 0
+                        self.data_received.emit(make_missing_row(next_loop, self._last_good_row))
                         continue
 
                     # 6) 정상 패킷이면 row emit
                     if row is not None:
+                        self._last_good_row = row
                         self.data_received.emit(row)
 
         finally:
             if ser is not None and ser.is_open:
                 try:
-                    ser.write(b"AGRB MON STOP")
-                    time.sleep(0.1)
-                    self.status_msg.emit("Sent: AGRB MON STOP")
+                    # Optional stop command (only needed for firmwares that require it)
+                    pass
                 except Exception:
                     pass
                 ser.close()
@@ -542,8 +591,59 @@ class CsvReviewDialog(QtWidgets.QDialog):
         arr = np.genfromtxt(path, delimiter=",", skip_header=1)
         if arr.ndim == 1:
             arr = arr.reshape(1, -1)
-        self.data = arr
+        self.data = self._postprocess_missing(arr)
         self.loop_cnt = self.data[:, 0]
+
+    def _postprocess_missing(self, arr: np.ndarray) -> np.ndarray:
+        """Fill/repair rows that were logged as missing (NaNs).
+
+        Policy:
+        - Integer-like columns: forward-fill (copy previous valid value).
+        - Float columns: linear interpolation on loopCnt index; edge NaNs are filled by nearest valid.
+        """
+        if arr.size == 0:
+            return arr
+
+        data = np.array(arr, copy=True)
+        x = data[:, 0]
+
+        int_indices = np.array([0, 1, 2, 3, 25, 26, 27, 28, 29, 30, 31, 32], dtype=int)
+        # 1) forward-fill int-like indices
+        for col in int_indices:
+            y = data[:, col]
+            if np.all(np.isnan(y)):
+                data[:, col] = 0
+                continue
+            last = None
+            for i in range(len(y)):
+                if not np.isnan(y[i]):
+                    last = y[i]
+                else:
+                    if last is not None:
+                        y[i] = last
+            data[:, col] = y
+
+        # 2) interpolate float-like columns (everything except int-like)
+        cols = data.shape[1]
+        for col in range(cols):
+            if col in set(int_indices.tolist()):
+                continue
+            y = data[:, col]
+            if not np.any(np.isnan(y)):
+                continue
+            valid = ~np.isnan(y)
+            if valid.sum() == 0:
+                # no valid values at all
+                data[:, col] = np.nan
+                continue
+            if valid.sum() == 1:
+                data[:, col] = y[valid][0]
+                continue
+            # linear interpolation; fill edges with nearest valid
+            y_interp = np.interp(x, x[valid], y[valid])
+            data[:, col] = y_interp
+
+        return data
 
     def _build_ui(self):
         # QDialog에서는 setCentralWidget 사용 X → 바로 레이아웃을 this에 붙임
