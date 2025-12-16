@@ -77,9 +77,8 @@ SOF_BYTES_BE = b"\xAA\x55"  # uint16 0xAA55 in big-endian stream
 #   int32  6개 (is_moving, hc_count, R/L upeak, R/L dpeak)
 #   uint8  2개 (tau_max_setting, s_gait_mode)
 #   float  1개 (s_g_knn_conf)
-#   float  9개 (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms, s_vel_HC, s_T_HC_s,
-#               s_norm_vel_HC, s_norm_T_HC, s_scaling_X, s_scaling_Y)
-STRUCT_FMT = '<IBBB21f6iBBf9f'
+# Firmware wire-format (EXPECTED): payload 153 bytes (tail floats 8), total 159 bytes.
+STRUCT_FMT = '<IBBB21f6iBBf8f'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
 # 전체 패킷 예상 길이: sof(2) + len(2) + payload + crc(2)
@@ -246,8 +245,8 @@ def decode_packet(data_tuple):
     #   [25..30] 6 int32
     #   [31..32] 2 uint8 (tau_max_setting, s_gait_mode)
     #   [33]     float (s_g_knn_conf)
-    #   [34..42] 9 floats tail
-    expected_elems = 4 + 21 + 6 + 2 + 1 + 9
+    # tail floats: 8 (payload 153)
+    expected_elems = 4 + 21 + 6 + 2 + 1 + 8
     if len(data_tuple) != expected_elems:
         raise ValueError(f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})")
 
@@ -278,9 +277,9 @@ def decode_packet(data_tuple):
     base = 4 + 21 + 6 + 2
     row[33] = float(data_tuple[base])
 
-    # 5) 9 floats tail
+    # 5) 8 floats tail
     base = 4 + 21 + 6 + 2 + 1
-    for i in range(9):
+    for i in range(8):
         row[34 + i] = float(data_tuple[base + i])
 
     return row
@@ -300,7 +299,7 @@ def decode_payload_to_row(payload: bytes, last_good_row=None):
     - If payload is longer: decode only the first PAYLOAD_SIZE bytes and ignore
       trailing bytes (back/forward-compatible).
     """
-    # Strict mode: only accept exact payload size.
+    # Strict mode: only accept expected payload size.
     if len(payload) != PAYLOAD_SIZE:
         try:
             next_loop = int(last_good_row[0]) + 1 if last_good_row is not None else 0
@@ -309,7 +308,15 @@ def decode_payload_to_row(payload: bytes, last_good_row=None):
         return make_missing_row(next_loop, last_good_row)
 
     data_tuple = struct.unpack(STRUCT_FMT, payload)
-    return decode_packet(data_tuple)
+    row = decode_packet(data_tuple)
+
+    # This firmware format does not include s_scaling_Y; keep it as NaN.
+    try:
+        row[CSV_COLS.index("s_scaling_Y")] = float("nan")
+    except Exception:
+        pass
+
+    return row
 
 
 def row_to_csv_line(row):
