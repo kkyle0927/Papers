@@ -86,6 +86,7 @@ STRUCT_FMT = '<IBBB20f6iBBf9f'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)  # 153
 
 EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 159
+ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
 
 CSV_HEADER = (
     "LoopCnt,H10Mode,H10AssistLevel,SmartAssist,"
@@ -191,16 +192,14 @@ def sanity_check_row(row, last_good_row=None):
         except Exception:
             return False, f"{key} missing"
 
-    # Torques: raw firmware units, expected to stay within [-20, 20].
     for key in ("LeftHipTorque", "RightHipTorque"):
         try:
             v = float(row[CSV_COLS.index(key)])
             if not np.isfinite(v):
                 return False, f"{key} invalid ({v})"
-            if v < -20.0 or v > 20.0:
-                return False, f"{key} out of range ({v})"
         except Exception:
             return False, f"{key} missing"
+
 
     return True, ""
 
@@ -658,7 +657,7 @@ class SerialWorker(QtCore.QObject):
                     # 길이 sanity check
                     # - If ALLOWED_TOTAL_PACKET_SIZES is a set, require exact size match.
                     # - If None, accept a sane range while still enforcing minimum size.
-                    ok_len = (length == EXPECTED_TOTAL_PACKET_SIZE)
+                    ok_len = (length in ALLOWED_TOTAL_PACKET_SIZES)
 
                     if not ok_len:
                         # resync only (do not count as packet error)
@@ -1275,6 +1274,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 item = pw.plot([], [], pen=color, name=name)
                 items[name] = item
             self._ts_items.append(items)
+
+        # --- FIXED Y-RANGES (requested) ---
+        # Plot1: thigh angles (example) -> -20 ~ 80
+        self.plot_widgets[0].setYRange(-20.0, 80.0, padding=0.0)
+
+        # Plot2: hip torque -> -20 ~ 20
+        self.plot_widgets[1].setYRange(-20.0, 20.0, padding=0.0)
+
+        # Plot3: T_swing_ms etc -> 0 ~ 700
+        self.plot_widgets[2].setYRange(0.0, 700.0, padding=0.0)
 
         # 4번 플롯은 scatter 전용 설정
         self.plot_widgets[3].setLabel("bottom", "s_norm_vel_HC")
