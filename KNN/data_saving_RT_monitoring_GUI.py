@@ -57,47 +57,35 @@ FLUSH_EVERY = 500               # CSV 라인 500개 모을 때마다 디스크�
 #     uint8_t s_gait_mode;
 #     float   s_g_knn_conf;
 #
-#     float T_swing_ms;
-#     float s_norm_vel_HC;
-#     float s_norm_T_HC;
-#     float s_scaling_X;
-#     float s_scaling_Y;
+# float T_swing_ms;
+# float T_swing_SOS_ms;
+# float T_swing_STS_ms;
+# float s_vel_HC;
+# float s_T_HC_s;
+# float s_norm_vel_HC;
+# float s_norm_T_HC;
+# float s_scaling_X;
+# float s_scaling_Y;
 #
 #     uint16_t crc;
 # } SavingData_t;
 
 SOF_VALUE = 0xAA55
 SOF_BYTES_LE = b"\x55\xAA"  # uint16 0xAA55 in little-endian stream
-SOF_BYTES_BE = b"\xAA\x55"  # uint16 0xAA55 in big-endian stream
 
-# payload 부분 (sof/len/crc 제외):
+## Firmware SavingData_t (packed) payload schema:
 #   uint32 loopCnt
 #   uint8  h10Mode, h10AssistLevel, SmartAssist
-#   float  21개
-#   int32  6개 (is_moving, hc_count, R/L upeak, R/L dpeak)
-#   uint8  2개 (tau_max_setting, s_gait_mode)
-#   float  1개 (s_g_knn_conf)
-# Firmware wire-format (EXPECTED): payload 153 bytes (tail floats 8), total 159 bytes.
-STRUCT_FMT = '<IBBB21f6iBBf8f'
-PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
+#   float  20개  (hip/thigh angles 4 + torques 2 + motor angles 2 + IMU 12)
+#   int32  6개   (is_moving, hc_count, R/L upeak, R/L dpeak)
+#   uint8  2개   (tau_max_setting, s_gait_mode)
+#   float  1개   (s_g_knn_conf)
+#   float  9개   (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms, s_vel_HC, s_T_HC_s,
+#                 s_norm_vel_HC, s_norm_T_HC, s_scaling_X, s_scaling_Y)
+STRUCT_FMT = '<IBBB20f6iBBf9f'
+PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)  # 153
 
-# 전체 패킷 예상 길이: sof(2) + len(2) + payload + crc(2)
-EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2
-
-# Some firmware builds may send an older/newer SavingData_t size.
-# In that case, the firmware's internal 'len' still matches the transmitted bytes,
-# but the PC-side payload schema (STRUCT_FMT) may or may not match.
-#
-# We accept variable lengths as long as they are:
-# - within a sane range
-# - at least big enough to contain our expected payload + CRC
-# The deeper validation later (payload size / struct.unpack / sanity checks)
-# will still reject incompatible formats.
-ALLOWED_TOTAL_PACKET_SIZES = None  # None => accept a range (see receive loop)
-
-# Back-compat placeholder: older builds sometimes had different struct sizes.
-# Keep this defined because some status strings reference it.
-EXPECTED_TOTAL_PACKET_SIZE_V0 = EXPECTED_TOTAL_PACKET_SIZE
+EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 159
 
 CSV_HEADER = (
     "LoopCnt,H10Mode,H10AssistLevel,SmartAssist,"
@@ -238,85 +226,58 @@ def crc16_modbus(data: bytes, init_val: int = 0xFFFF) -> int:
 
 def decode_packet(data_tuple):
     """STRUCT_FMT 언팩 결과(tuple) -> row(list), CSV_COLS와 동일한 순서"""
-    # Expected tuple layout:
-    #   [0] loopCnt (I)
-    #   [1..3] h10Mode, h10AssistLevel, SmartAssist (B,B,B)
-    #   [4..24] 21 floats
-    #   [25..30] 6 int32
-    #   [31..32] 2 uint8 (tau_max_setting, s_gait_mode)
-    #   [33]     float (s_g_knn_conf)
-    # tail floats: 8 (payload 153)
-    expected_elems = 4 + 21 + 6 + 2 + 1 + 8
-    if len(data_tuple) != expected_elems:
-        raise ValueError(f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})")
 
-    # Row must match CSV columns exactly.
+    # tuple layout:
+    #   [0]      loopCnt (I)
+    #   [1..3]   h10Mode, h10AssistLevel, SmartAssist (B,B,B)
+    #   [4..23]  20 floats
+    #   [24..29] 6 int32
+    #   [30..31] 2 uint8 (tau_max_setting, s_gait_mode)
+    #   [32]     float (s_g_knn_conf)
+    #   [33..41] 9 floats tail
+    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 9  # 42
+    if len(data_tuple) != expected_elems:
+        raise ValueError(
+            f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})"
+        )
+
     row = [0] * len(CSV_COLS)
 
-    # 0) header-ish fields
+    # 0) loopCnt + 3 uint8
     row[0] = int(data_tuple[0])
     row[1] = int(data_tuple[1])
     row[2] = int(data_tuple[2])
     row[3] = int(data_tuple[3])
 
-    # 1) 21 floats
-    for i in range(21):
+    # 1) 20 floats
+    for i in range(20):
         row[4 + i] = float(data_tuple[4 + i])
 
     # 2) 6 int32
-    base = 4 + 21
+    base = 4 + 20
     for i in range(6):
         row[25 + i] = int(data_tuple[base + i])
 
     # 3) 2 uint8
-    base = 4 + 21 + 6
-    row[31] = int(data_tuple[base + 0])
-    row[32] = int(data_tuple[base + 1])
+    base = 4 + 20 + 6
+    row[31] = int(data_tuple[base + 0])  # tau_max_setting
+    row[32] = int(data_tuple[base + 1])  # s_gait_mode
 
     # 4) s_g_knn_conf
-    base = 4 + 21 + 6 + 2
+    base = 4 + 20 + 6 + 2
     row[33] = float(data_tuple[base])
 
-    # 5) 8 floats tail
-    base = 4 + 21 + 6 + 2 + 1
-    for i in range(8):
+    # 5) tail 9 floats -> CSV columns 34..42
+    base = 4 + 20 + 6 + 2 + 1
+    for i in range(9):
         row[34 + i] = float(data_tuple[base + i])
 
     return row
 
 
 def decode_payload_to_row(payload: bytes, last_good_row=None):
-    """Decode payload bytes into a CSV_COLS-aligned row.
-
-    This keeps existing GUI/plots/options stable while allowing the transport
-    layer to follow the firmware framing (SOF/len/CRC) even when the firmware
-    struct size changes.
-
-    Strategy:
-    - If payload matches PAYLOAD_SIZE exactly: decode with STRUCT_FMT.
-    - If payload is shorter: decode the prefix fields that fit, then pad missing
-      columns (floats->NaN, ints->forward-fill) using make_missing_row().
-    - If payload is longer: decode only the first PAYLOAD_SIZE bytes and ignore
-      trailing bytes (back/forward-compatible).
-    """
-    # Strict mode: only accept expected payload size.
-    if len(payload) != PAYLOAD_SIZE:
-        try:
-            next_loop = int(last_good_row[0]) + 1 if last_good_row is not None else 0
-        except Exception:
-            next_loop = 0
-        return make_missing_row(next_loop, last_good_row)
-
     data_tuple = struct.unpack(STRUCT_FMT, payload)
-    row = decode_packet(data_tuple)
-
-    # This firmware format does not include s_scaling_Y; keep it as NaN.
-    try:
-        row[CSV_COLS.index("s_scaling_Y")] = float("nan")
-    except Exception:
-        pass
-
-    return row
+    return decode_packet(data_tuple)
 
 
 def row_to_csv_line(row):
@@ -493,19 +454,12 @@ class SerialWorker(QtCore.QObject):
         self._max_consecutive_packet_errors = 8
         self._max_consecutive_sanity_failures = 3
         self._len_mismatch_seen = 0
-        self._sof_endian = "le"  # try little-endian first
 
     def _find_sof_index(self, buf: bytearray) -> int:
-        """Return index of next plausible SOF bytes in buf, or -1 if not found."""
+        """Return index of next SOF (LE only) in buf, or -1 if not found."""
         if len(buf) < 2:
             return -1
-        idx_le = buf.find(SOF_BYTES_LE)
-        idx_be = buf.find(SOF_BYTES_BE)
-        if idx_le == -1:
-            return idx_be
-        if idx_be == -1:
-            return idx_le
-        return idx_le if idx_le < idx_be else idx_be
+        return buf.find(SOF_BYTES_LE)
 
     def _log_packet_debug(self, sof: int, length: int, packet_len: int = None, recv_crc: int = None, calc_crc: int = None):
         """에러 상황에서만 len/CRC 등을 스로틀링해서 출력."""
@@ -598,7 +552,7 @@ class SerialWorker(QtCore.QObject):
                 )
                 self.status_msg.emit(f"Connected to {self.port_name}")
                 self.status_msg.emit(
-                    f"Expected total packet size: {EXPECTED_TOTAL_PACKET_SIZE} bytes (also accepts {EXPECTED_TOTAL_PACKET_SIZE_V0} bytes)"
+                    f"Expected total packet size: {EXPECTED_TOTAL_PACKET_SIZE} bytes (strict)"
                 )
             except Exception as e:
                 err_msg = f"Serial open error: {e}"
@@ -658,7 +612,7 @@ class SerialWorker(QtCore.QObject):
                             (
                                 f"No valid packets yet. Len mismatch seen {self._len_mismatch_seen} times. "
                                 + (
-                                    f"Expected len={EXPECTED_TOTAL_PACKET_SIZE} (or {EXPECTED_TOTAL_PACKET_SIZE_V0})."
+                                    f"Expected len={EXPECTED_TOTAL_PACKET_SIZE} (strict)."
                                     if ALLOWED_TOTAL_PACKET_SIZES is not None
                                     else "Accepting a range of lengths; waiting for a decodable packet..."
                                 )
@@ -669,7 +623,7 @@ class SerialWorker(QtCore.QObject):
                             (
                                 f"No valid packets yet. Waiting for SOF=0x{SOF_VALUE:04X} "
                                 + (
-                                    f"and len={EXPECTED_TOTAL_PACKET_SIZE} (or {EXPECTED_TOTAL_PACKET_SIZE_V0})..."
+                                    f"and len={EXPECTED_TOTAL_PACKET_SIZE} (strict)..."
                                     if ALLOWED_TOTAL_PACKET_SIZES is not None
                                     else "and a sane length..."
                                 )
@@ -683,7 +637,7 @@ class SerialWorker(QtCore.QObject):
                     if len(buf) < 4:
                         break
 
-                    # SOF scan/resync: jump to the next SOF signature (AA55 or 55AA)
+                    # SOF scan/resync: jump to the next SOF signature (LE only: 0xAA55 -> 55 AA)
                     sof_idx = self._find_sof_index(buf)
                     if sof_idx < 0:
                         # No SOF in buffer; keep only the last 1 byte in case SOF spans reads.
@@ -695,30 +649,16 @@ class SerialWorker(QtCore.QObject):
                         if len(buf) < 4:
                             break
 
-                    # Determine endian by observed byte order
-                    if buf[:2] == SOF_BYTES_LE:
-                        self._sof_endian = "le"
-                    elif buf[:2] == SOF_BYTES_BE:
-                        self._sof_endian = "be"
-
                     # Parse SOF value for debug
                     sof = SOF_VALUE
 
                     # len 읽기 (match the SOF endian)
-                    if self._sof_endian == "le":
-                        length = buf[2] | (buf[3] << 8)
-                    else:
-                        length = (buf[2] << 8) | buf[3]
+                    length = buf[2] | (buf[3] << 8)  # LE only
 
                     # 길이 sanity check
                     # - If ALLOWED_TOTAL_PACKET_SIZES is a set, require exact size match.
                     # - If None, accept a sane range while still enforcing minimum size.
-                    if ALLOWED_TOTAL_PACKET_SIZES is not None:
-                        ok_len = (length in ALLOWED_TOTAL_PACKET_SIZES)
-                    else:
-                        # Accept a broad but sane range; deeper checks validate actual format.
-                        # This allows legacy firmwares that still send smaller frames (e.g., 159 bytes).
-                        ok_len = (8 <= length <= 2048)
+                    ok_len = (length == EXPECTED_TOTAL_PACKET_SIZE)
 
                     if not ok_len:
                         # resync only (do not count as packet error)
@@ -738,10 +678,7 @@ class SerialWorker(QtCore.QObject):
 
                     # Extra internal consistency check: packet[2:4] should match the same length
                     # (protects against accidental mis-alignment when SOF occurs inside payload).
-                    if self._sof_endian == "le":
-                        inner_len = packet[2] | (packet[3] << 8)
-                    else:
-                        inner_len = (packet[2] << 8) | packet[3]
+                    inner_len = packet[2] | (packet[3] << 8)  # LE only
                     if inner_len != length:
                         # Treat as bad packet (tick-based).
                         had_error = True
@@ -877,17 +814,26 @@ class CsvReviewDialog(QtWidgets.QDialog):
         self.groups = [
             ["LeftHipAngle", "RightHipAngle", "LeftHipTorque", "RightHipTorque"],  # 1
             ["LeftHipImuGlobalAccX","LeftHipImuGlobalAccY","LeftHipImuGlobalAccZ",
-             "RightHipImuGlobalAccX","RightHipImuGlobalAccY","RightHipImuGlobalAccZ"],  # 2
+            "RightHipImuGlobalAccX","RightHipImuGlobalAccY","RightHipImuGlobalAccZ"],  # 2
             ["LeftHipImuGlobalGyrX","LeftHipImuGlobalGyrY","LeftHipImuGlobalGyrZ",
-             "RightHipImuGlobalGyrX","RightHipImuGlobalGyrY","RightHipImuGlobalGyrZ"],  # 3
-            ["TrunkIMU_LocalAccX","TrunkIMU_LocalAccY","TrunkIMU_LocalAccZ"],  # 4
-            ["TrunkIMU_LocalGyrX","TrunkIMU_LocalGyrY","TrunkIMU_LocalGyrZ"],  # 5
-            ["TrunkIMU_QuatW","TrunkIMU_QuatX","TrunkIMU_QuatY","TrunkIMU_QuatZ"],  # 6
-            ["is_moving", "hc_count", "R_count_upeak", "L_count_upeak", "R_count_dpeak", "L_count_dpeak"],  # 7
-              ["tau_max_setting", "s_gait_mode", "s_g_knn_conf",
-               "T_swing_ms", "T_swing_SOS_ms", "T_swing_STS_ms",
-               "s_vel_HC", "s_T_HC_s", "s_norm_vel_HC", "s_norm_T_HC"],  # 8
+            "RightHipImuGlobalGyrX","RightHipImuGlobalGyrY","RightHipImuGlobalGyrZ"],  # 3
+
+            # 4: motor angle / thigh angle 등으로 대체 예시
+            ["LeftHipMotorAngle","RightHipMotorAngle","LeftThighAngle","RightThighAngle"],  # 4
+
+            # 5: KNN/스케일링
+            ["s_g_knn_conf","s_scaling_X","s_scaling_Y"],  # 5
+
+            # 6: 타이밍 관련
+            ["T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms","s_vel_HC","s_T_HC_s"],  # 6
+
+            ["is_moving","hc_count","R_count_upeak","L_count_upeak","R_count_dpeak","L_count_dpeak"],  # 7
+
+            ["tau_max_setting","s_gait_mode","s_g_knn_conf",
+            "T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms",
+            "s_vel_HC","s_T_HC_s","s_norm_vel_HC","s_norm_T_HC","s_scaling_X","s_scaling_Y"],  # 8
         ]
+
 
         # 데이터 로드
         self.col_index = {name: i for i, name in enumerate(CSV_COLS)}
@@ -1137,7 +1083,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("USB CDC Real-time Monitor & Auto Logger (6 Plots)")
+        self.setWindowTitle("USB CDC Real-time Monitor & Auto Logger (4 Plots)")
         self.resize(1400, 900)
 
         # 버퍼 & 상태
@@ -1150,8 +1096,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hc_points_y = []
         self._hc_points_brush = []
         self._hc_scatter_item = None
-        # NOTE: Scatter plot (Graph 4) is intentionally cumulative.
-        # We do not trim _hc_points_* so that previously plotted points remain visible.
+        # NOTE: Scatter plot (Graph 4) keeps the last SCATTER_KEEP_LAST_N points.
 
         # 실시간 plot item 캐시 (setData로 갱신해서 CPU 절약)
         self._ts_items = []  # list[dict[name -> PlotDataItem]] for plot 1~3
@@ -1712,7 +1657,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if x_vals:
                 pw.setXRange(min(x_vals), max(x_vals), padding=0.01)
 
-        # Plot 4: scatter (fixed axes) - cumulative points (do not clear)
+        # Plot 4: scatter (fixed axes) - last N points (do not clear the item, just overwrite spots)
         if self._hc_scatter_item is not None:
             spots = []
             for x, y, br in zip(self._hc_points_x, self._hc_points_y, self._hc_points_brush):
