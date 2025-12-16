@@ -44,47 +44,23 @@ void FillAndSendSavingData(void)
     SavingData.rightHipImuGlobalGyrY = XM.status.h10.rightHipImuGlobalGyrY;
     SavingData.rightHipImuGlobalGyrZ = XM.status.h10.rightHipImuGlobalGyrZ;
 
-    SavingData.TrunkIMU_QuatW = XM.status.imu.q_w;
-    SavingData.TrunkIMU_QuatX = XM.status.imu.q_x;
-    SavingData.TrunkIMU_QuatY = XM.status.imu.q_y;
-    SavingData.TrunkIMU_QuatZ = XM.status.imu.q_z;
+    SavingData.is_moving = (int32_t)s_is_moving;
+    SavingData.hc_count  = (int32_t)hc_count;
+    SavingData.R_count_upeak = (int32_t)R_count_upeak;
+    SavingData.L_count_upeak = (int32_t)L_count_upeak;
+    SavingData.R_count_dpeak = (int32_t)R_count_dpeak;
+    SavingData.L_count_dpeak = (int32_t)L_count_dpeak;
 
-    SavingData.TrunkIMU_LocalAccX = XM.status.imu.acc_x;
-    SavingData.TrunkIMU_LocalAccY = XM.status.imu.acc_y;
-    SavingData.TrunkIMU_LocalAccZ = XM.status.imu.acc_z;
-    SavingData.TrunkIMU_LocalGyrX = XM.status.imu.gyr_x;
-    SavingData.TrunkIMU_LocalGyrY = XM.status.imu.gyr_y;
-    SavingData.TrunkIMU_LocalGyrZ = XM.status.imu.gyr_z;
+    SavingData.tau_max_setting = (uint8_t)tau_max_setting;
 
-    SavingData.leftFSR1  = XM.status.grf.leftSensorData[0];
-    SavingData.leftFSR2  = XM.status.grf.leftSensorData[1];
-    SavingData.leftFSR3  = XM.status.grf.leftSensorData[2];
-    SavingData.leftFSR4  = XM.status.grf.leftSensorData[3];
-    SavingData.leftFSR5  = XM.status.grf.leftSensorData[4];
-    SavingData.leftFSR6  = XM.status.grf.leftSensorData[5];
-    SavingData.leftFSR7  = XM.status.grf.leftSensorData[6];
-    SavingData.leftFSR8  = XM.status.grf.leftSensorData[7];
-    SavingData.leftFSR9  = XM.status.grf.leftSensorData[8];
-    SavingData.leftFSR10 = XM.status.grf.leftSensorData[9];
-    SavingData.leftFSR11 = XM.status.grf.leftSensorData[10];
-    SavingData.leftFSR12 = XM.status.grf.leftSensorData[11];
-    SavingData.leftFSR13 = XM.status.grf.leftSensorData[12];
-    SavingData.leftFSR14 = XM.status.grf.leftSensorData[13];
+    SavingData.s_gait_mode = (uint8_t)s_gait_mode;
+    SavingData.s_g_knn_conf    = (float)s_g_knn_conf;
 
-    SavingData.rightFSR1  = XM.status.grf.rightSensorData[0];
-    SavingData.rightFSR2  = XM.status.grf.rightSensorData[1];
-    SavingData.rightFSR3  = XM.status.grf.rightSensorData[2];
-    SavingData.rightFSR4  = XM.status.grf.rightSensorData[3];
-    SavingData.rightFSR5  = XM.status.grf.rightSensorData[4];
-    SavingData.rightFSR6  = XM.status.grf.rightSensorData[5];
-    SavingData.rightFSR7  = XM.status.grf.rightSensorData[6];
-    SavingData.rightFSR8  = XM.status.grf.rightSensorData[7];
-    SavingData.rightFSR9  = XM.status.grf.rightSensorData[8];
-    SavingData.rightFSR10 = XM.status.grf.rightSensorData[9];
-    SavingData.rightFSR11 = XM.status.grf.rightSensorData[10];
-    SavingData.rightFSR12 = XM.status.grf.rightSensorData[11];
-    SavingData.rightFSR13 = XM.status.grf.rightSensorData[12];
-    SavingData.rightFSR14 = XM.status.grf.rightSensorData[13];
+    SavingData.T_cycle_ms     = (float)T_cycle_ms;
+    SavingData.s_norm_vel_HC  = (float)s_dbg_norm_vel_HC;
+    SavingData.s_norm_T_HC    = (float)s_dbg_norm_T_HC;
+    SavingData.s_scaling_X    = (float)s_dbg_scaling_X;
+    SavingData.s_scaling_Y    = (float)s_dbg_scaling_Y;
 
     // 3) 헤더/CRC 설정
     SavingData.sof = TRANSMIT_SOF;

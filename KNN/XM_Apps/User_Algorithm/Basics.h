@@ -22,6 +22,14 @@ typedef enum {
     SmartAssist_ON,
 } SmartAssist_t;
 
+typedef enum {
+    NONE = 0,
+    RSOS = 1,
+    RSTS = 2,
+    LSOS = 3,
+    LSTS = 4,
+} GaitMode_t;
+
 typedef struct __attribute__((packed)) {
     uint16_t sof;
     uint16_t len;
@@ -42,17 +50,25 @@ typedef struct __attribute__((packed)) {
     float rightHipImuGlobalAccX, rightHipImuGlobalAccY, rightHipImuGlobalAccZ;
     float rightHipImuGlobalGyrX, rightHipImuGlobalGyrY, rightHipImuGlobalGyrZ;
 
-    float TrunkIMU_LocalAccX, TrunkIMU_LocalAccY, TrunkIMU_LocalAccZ;
-    float TrunkIMU_LocalGyrX, TrunkIMU_LocalGyrY, TrunkIMU_LocalGyrZ;
-    float TrunkIMU_QuatW, TrunkIMU_QuatX, TrunkIMU_QuatY, TrunkIMU_QuatZ;
+    int32_t is_moving;
+    int32_t hc_count;
 
-    float leftFSR1, leftFSR2, leftFSR3, leftFSR4, leftFSR5, leftFSR6;
-    float leftFSR7, leftFSR8, leftFSR9, leftFSR10, leftFSR11, leftFSR12;
-    float leftFSR13, leftFSR14;
+    int32_t R_count_upeak;
+    int32_t L_count_upeak;
+    int32_t R_count_dpeak;
+    int32_t L_count_dpeak;
 
-    float rightFSR1, rightFSR2, rightFSR3, rightFSR4, rightFSR5, rightFSR6;
-    float rightFSR7, rightFSR8, rightFSR9, rightFSR10, rightFSR11, rightFSR12;
-    float rightFSR13, rightFSR14;
+    uint8_t tau_max_setting;
+
+    uint8_t s_gait_mode;
+    float   s_g_knn_conf;
+
+    // KNN normalization / cycle period (debug/analysis)
+    float T_cycle_ms;
+    float s_norm_vel_HC;
+    float s_norm_T_HC;
+    float s_scaling_X;
+    float s_scaling_Y;
 
     uint16_t crc;
 } SavingData_t;
@@ -71,6 +87,28 @@ extern RecordingState_t Recording;
 extern SmartAssist_t   SmartAssist;
 
 extern bool xsensIMUenableRes;
+
+// From KNN.c (debug/mode recognition)
+extern volatile int s_is_moving;
+extern volatile int hc_count;
+extern volatile int R_count_upeak;
+extern volatile int L_count_upeak;
+extern volatile int R_count_dpeak;
+extern volatile int L_count_dpeak;
+
+// From KNN.c (button-controlled tau_max)
+extern volatile int tau_max_setting;
+
+// From KNN.c (KNN classification outputs)
+extern volatile GaitMode_t s_gait_mode;
+extern volatile float s_g_knn_conf;
+
+// From KNN.c (KNN normalization/cycle debug)
+extern volatile float T_cycle_ms;
+extern volatile float s_dbg_norm_vel_HC;
+extern volatile float s_dbg_norm_T_HC;
+extern volatile float s_dbg_scaling_X;
+extern volatile float s_dbg_scaling_Y;
 
 #define TRANSMIT_SOF  (0xAA55u)
 

@@ -85,6 +85,11 @@ static FVecSlot_t s_fvec_buf_RH[F_VECTOR_BUFF_SIZE];
 // Applies identically to RH and LH.
 static const float kManuscriptFVec[4] = { 0.0f, 3.0f, 0.0f, 400.0f };
 
+// Assist torque amplitude (tau_max) controlled by XM_BTN_1 click.
+// Cycles: 1 -> 2 -> ... -> 7 -> 1 -> ...
+// Exposed (non-static) for Live Expressions / CDC.
+volatile int tau_max_setting = 1;
+
 
 /**
  *-----------------------------------------------------------
@@ -160,11 +165,13 @@ static bool s_HC_time_upcond = false;
 static bool s_HC_Rswing4upcond = false;
 static bool s_HC_Lswing4upcond = false;
 
-static int s_R_count_upeak = 0;
-static int s_R_count_dpeak = 0;
-static int s_L_count_upeak = 0;
-static int s_L_count_dpeak = 0;
-static int s_HC_count = 0;
+// Peak detection counters (watch via Live Expressions / send via CDC)
+volatile int R_count_upeak = 0;
+volatile int R_count_dpeak = 0;
+volatile int L_count_upeak = 0;
+volatile int L_count_dpeak = 0;
+// HC detection counter (increments on each HC event)
+volatile int hc_count = 0;
 
 // Timing parameters are in absolute time (ms), not ticks.
 static float s_t_gap_ms = 400.0f;
@@ -181,6 +188,9 @@ static float s_L_time_afterup_ms = 0.0f;
 static float s_HC_time_after_ms = 0.0f;
 static float s_swing_period_ms = 400.0f;
 
+// Debug-visible cycle period (ms). Mirrors s_swing_period_ms for Live Expressions.
+volatile float T_cycle_ms = 400.0f;
+
 static float s_vel_HC = 0.0f;
 static float s_R_swing_time_ms = 0.0f;
 static float s_L_swing_time_ms = 0.0f;
@@ -190,6 +200,12 @@ static float s_norm_T_HC = 0.0f;
 
 static float s_scaling_X = 105.6426f;
 static float s_scaling_Y = 835.8209f;
+
+// CDC/Live-expression mirrors (s_* are static above; these are global and volatile).
+volatile float s_dbg_norm_vel_HC = 0.0f;
+volatile float s_dbg_norm_T_HC = 0.0f;
+volatile float s_dbg_scaling_X = 105.6426f;
+volatile float s_dbg_scaling_Y = 835.8209f;
 
 #ifndef KNN_REF_COUNT
 #  define KNN_REF_COUNT    REF_COUNT
@@ -201,10 +217,33 @@ static float s_scaling_Y = 835.8209f;
 #  define KNN_K            9
 #endif
 
-static int s_R_g_knn_label = 0;
-static int s_L_g_knn_label = 0;
-static float s_g_knn_conf = 0.0f;
+// KNN classification outputs (watch via Live Expressions / send via CDC)
+// Exposed as a single combined gait mode.
+volatile GaitMode_t s_gait_mode = NONE;
+volatile float s_g_knn_conf = 0.0f;
 
+typedef enum {
+    GAIT_LATCH_NONE = 0,
+    GAIT_LATCH_R = 1,
+    GAIT_LATCH_L = 2,
+} GaitLatchLeg_t;
+
+static GaitLatchLeg_t s_gait_mode_latch_leg = GAIT_LATCH_NONE;
+
+// Debug-visible trigger flags (use in Live Expressions)
+volatile bool trig_R = false;
+volatile bool trig_L = false;
+
+// Debug-visible moving/standing snapshot (use in Live Expressions)
+volatile int s_is_moving = 0;
+
+// Debug-visible raw/processed signals to diagnose why is_moving stays 0
+volatile float s_dbg_wR_f = 0.0f;
+volatile float s_dbg_wL_f = 0.0f;
+
+// Debug-visible computed torque commands (orders) even when not actuating (e.g. STANDBY)
+volatile float s_tau_cmd_R = 0.0f;
+volatile float s_tau_cmd_L = 0.0f;
 
 /**
  *------------------------------------------------------------
@@ -241,12 +280,16 @@ typedef struct {
     bool l_stop_assist;
 } GaitRecognitionResult_t;
 
+// Debug-visible gait feature/result snapshots (use in Live Expressions)
+volatile GaitFeatures_t s_gait_feat;
+volatile GaitRecognitionResult_t s_gait_rec;
+
 static void GaitModeRecognition_Update(float rightThighDeg, float leftThighDeg,
                                        GaitFeatures_t* feat_out);
 static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
                                              GaitRecognitionResult_t* res_out);
 static void adaptive_assist(const GaitRecognitionResult_t* rec,
-                            bool* trig_R, bool* trig_L,
+                            bool* out_trig_R, bool* out_trig_L,
                             float* out_tau_R, float* out_tau_L);
 
 static void FVecDecoder_InitSingle(FVecSlot_t buf[]);
@@ -351,7 +394,6 @@ static void Standby_Entry(void)
 	// XSENS IMU 부팅 시간 확보 (전원 인가 후 최소 150ms 필요)
     HAL_Delay(150);
     XM_SetControlMode(XM_CTRL_MONITOR);
-    UpdateXsensImuEnable();
 }
 
 static void Standby_Loop(void)
@@ -360,8 +402,61 @@ static void Standby_Loop(void)
     if (XM.status.h10.h10Mode == XM_H10_MODE_ASSIST) {
         XM_TSM_TransitionTo(s_userHandle, XM_STATE_ACTIVE);
     }
-    UpdateXsensImuEnable();
 
+    // Update tau_max on each button-1 click
+    XM_button1 = XM_GetButtonEvent(XM_BTN_1);
+    if (XM_button1 == XM_BTN_CLICK) {
+        if (tau_max_setting >= 7) tau_max_setting = 1;
+        else tau_max_setting += 1;
+    }
+
+    // In STANDBY: compute assist "orders" (triggers + f-vector decode), but do NOT actuate.
+    trig_R = false;
+    trig_L = false;
+    float ignored_R = 0.0f, ignored_L = 0.0f;
+
+    GaitModeRecognition_Update(XM.status.h10.rightThighAngle, XM.status.h10.leftThighAngle, (GaitFeatures_t*)&s_gait_feat);
+    GaitModeRecognition_DetectEvents((const GaitFeatures_t*)&s_gait_feat, (GaitRecognitionResult_t*)&s_gait_rec);
+    s_is_moving = s_gait_feat.is_moving;
+    s_dbg_wR_f = s_gait_feat.wR_f;
+    s_dbg_wL_f = s_gait_feat.wL_f;
+
+    adaptive_assist((const GaitRecognitionResult_t*)&s_gait_rec, (bool*)&trig_R, (bool*)&trig_L, &ignored_R, &ignored_L);
+
+    if (trig_R && !Rstop_assist) {
+        float fvec[4] = { kManuscriptFVec[0], (float)tau_max_setting, kManuscriptFVec[2], kManuscriptFVec[3] };
+        TriggerManuscriptFVecSingle(s_fvec_buf_RH, fvec);
+    }
+    if (trig_L && !Lstop_assist) {
+        float fvec[4] = { kManuscriptFVec[0], (float)tau_max_setting, kManuscriptFVec[2], kManuscriptFVec[3] };
+        TriggerManuscriptFVecSingle(s_fvec_buf_LH, fvec);
+    }
+
+    float tau_R = FVecDecoder_StepSingle(s_fvec_buf_RH);
+    float tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
+
+    // Apply the same STS soft-stop shaping to the computed orders.
+    const bool r_sts = (s_gait_mode == RSTS);
+    const bool l_sts = (s_gait_mode == LSTS);
+    const float dt_s = (CTRL_DT_MS * 0.001f);
+    const float rise_time_s = 0.10f;
+    const float residual_ratio = 0.01f;
+    float T_decay_s = rise_time_s;
+    if (rise_time_s > 0.0f && residual_ratio > 0.0f && residual_ratio < 1.0f) {
+        T_decay_s = -rise_time_s / logf(residual_ratio);
+    }
+    if (T_decay_s < dt_s) T_decay_s = dt_s;
+    const float alpha = dt_s / (T_decay_s + dt_s);
+
+    static float s_tau_out_R = 0.0f;
+    static float s_tau_out_L = 0.0f;
+    const float target_R = r_sts ? 0.0f : tau_R;
+    const float target_L = l_sts ? 0.0f : tau_L;
+    s_tau_out_R = s_tau_out_R + alpha * (target_R - s_tau_out_R);
+    s_tau_out_L = s_tau_out_L + alpha * (target_L - s_tau_out_L);
+
+    s_tau_cmd_R = s_tau_out_R;
+    s_tau_cmd_L = s_tau_out_L;
 }
 
 static void Active_Entry(void)
@@ -373,27 +468,68 @@ static void Active_Entry(void)
 static void Active_Loop(void)
 {
 	UpdateRecordingState();
-    
+
+    // Update tau_max on each button-1 click
+    XM_button1 = XM_GetButtonEvent(XM_BTN_1);
+    if (XM_button1 == XM_BTN_CLICK) {
+        if (tau_max_setting >= 7) tau_max_setting = 1;
+        else tau_max_setting += 1;
+    }
+
     // --- USER_DEFINED_CTRL: trigger manuscript-defined f-vector and decode/actuate in real-time ---
-    bool trig_R = false, trig_L = false;
+    trig_R = false;
+    trig_L = false;
     float ignored_R = 0.0f, ignored_L = 0.0f;
-    GaitFeatures_t feat;
-    GaitRecognitionResult_t rec;
-    GaitModeRecognition_Update(XM.status.h10.leftThighAngle, XM.status.h10.leftThighAngle, &feat);
-    GaitModeRecognition_DetectEvents(&feat, &rec);
-    adaptive_assist(&rec, &trig_R, &trig_L, &ignored_R, &ignored_L);
+
+    GaitModeRecognition_Update(XM.status.h10.rightThighAngle, XM.status.h10.leftThighAngle, (GaitFeatures_t*)&s_gait_feat);
+    GaitModeRecognition_DetectEvents((const GaitFeatures_t*)&s_gait_feat, (GaitRecognitionResult_t*)&s_gait_rec);
+    s_is_moving = s_gait_feat.is_moving;
+
+    // Mirror processed metrics for Live Expressions
+    s_dbg_wR_f = s_gait_feat.wR_f;
+    s_dbg_wL_f = s_gait_feat.wL_f;
+
+    adaptive_assist((const GaitRecognitionResult_t*)&s_gait_rec, (bool*)&trig_R, (bool*)&trig_L, &ignored_R, &ignored_L);
 
     if (trig_R && !Rstop_assist) {
-        TriggerManuscriptFVecSingle(s_fvec_buf_RH, kManuscriptFVec);
+        float fvec[4] = { kManuscriptFVec[0], (float)tau_max_setting, kManuscriptFVec[2], kManuscriptFVec[3] };
+        TriggerManuscriptFVecSingle(s_fvec_buf_RH, fvec);
     }
     if (trig_L && !Lstop_assist) {
-        TriggerManuscriptFVecSingle(s_fvec_buf_LH, kManuscriptFVec);
+        float fvec[4] = { kManuscriptFVec[0], (float)tau_max_setting, kManuscriptFVec[2], kManuscriptFVec[3] };
+        TriggerManuscriptFVecSingle(s_fvec_buf_LH, fvec);
     }
 
     float tau_R = FVecDecoder_StepSingle(s_fvec_buf_RH);
     float tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
-    XM_SetAssistTorqueRH(tau_R);
-    XM_SetAssistTorqueLH(tau_L);
+
+    // Soft stop: when STS is detected, ramp the *actual* output torque down to 0.
+    const bool r_sts = (s_gait_mode == RSTS);
+    const bool l_sts = (s_gait_mode == LSTS);
+    const float dt_s = (CTRL_DT_MS * 0.001f);
+    const float rise_time_s = 0.10f;
+    const float residual_ratio = 0.01f;
+    float T_decay_s = rise_time_s;
+    if (rise_time_s > 0.0f && residual_ratio > 0.0f && residual_ratio < 1.0f) {
+        T_decay_s = -rise_time_s / logf(residual_ratio);
+    }
+    if (T_decay_s < dt_s) T_decay_s = dt_s;
+    const float alpha = dt_s / (T_decay_s + dt_s);
+
+    static float s_tau_out_R = 0.0f;
+    static float s_tau_out_L = 0.0f;
+    const float target_R = r_sts ? 0.0f : tau_R;
+    const float target_L = l_sts ? 0.0f : tau_L;
+    s_tau_out_R = s_tau_out_R + alpha * (target_R - s_tau_out_R);
+    s_tau_out_L = s_tau_out_L + alpha * (target_L - s_tau_out_L);
+
+    // Actuate in ACTIVE
+    XM_SetAssistTorqueRH(s_tau_out_R);
+    XM_SetAssistTorqueLH(s_tau_out_L);
+
+    // Mirror for debug/telemetry
+    s_tau_cmd_R = s_tau_out_R;
+    s_tau_cmd_L = s_tau_out_L;
 }
 
 static void Active_Exit(void)
@@ -565,7 +701,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         s_Rdeg[2] > s_thres_down && s_Ldeg[2] > s_thres_down) {
         s_HC_time_upcond = false;
         s_HC_time_after_ms = 0.0f;
-        s_HC_count++;
+        hc_count++;
 
         if (s_Rdeg[2] - s_Rdeg[1] >= s_Ldeg[2] - s_Ldeg[1] && s_L_uppeak_val > 40.0f) {
             s_HC_Rswing4upcond = true;
@@ -576,9 +712,16 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
             s_norm_T_HC = ((s_T_HC_ms * 0.001f) / swing_period_s) / s_scaling_Y;
 
-            s_R_g_knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT,
-                                                    s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
-            if (s_R_g_knn_label == 1) {
+            s_dbg_norm_vel_HC = s_norm_vel_HC;
+            s_dbg_norm_T_HC = s_norm_T_HC;
+            s_dbg_scaling_X = s_scaling_X;
+            s_dbg_scaling_Y = s_scaling_Y;
+
+            const int knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT,
+                                                        s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
+            s_gait_mode = (knn_label == 1) ? RSTS : RSOS;
+            s_gait_mode_latch_leg = GAIT_LATCH_R;
+            if (s_gait_mode == RSTS) {
                 Rstop_assist = true;
             }
         } else if (s_Ldeg[2] - s_Ldeg[1] >= s_Rdeg[2] - s_Rdeg[1] && s_R_uppeak_val > 40.0f) {
@@ -590,9 +733,16 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
             s_norm_T_HC = ((s_T_HC_ms * 0.001f) / swing_period_s) / s_scaling_Y;
 
-            s_L_g_knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT,
-                                                    s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
-            if (s_L_g_knn_label == 1) {
+            s_dbg_norm_vel_HC = s_norm_vel_HC;
+            s_dbg_norm_T_HC = s_norm_T_HC;
+            s_dbg_scaling_X = s_scaling_X;
+            s_dbg_scaling_Y = s_scaling_Y;
+
+            const int knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT,
+                                                        s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
+            s_gait_mode = (knn_label == 1) ? LSTS : LSOS;
+            s_gait_mode_latch_leg = GAIT_LATCH_L;
+            if (s_gait_mode == LSTS) {
                 Lstop_assist = true;
             }
         }
@@ -604,10 +754,17 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         s_Rdeg[2] >= s_thres_up && s_R_time_upcond) {
         s_R_uppeak_val = s_Rdeg[2];
         s_R_time_upcond = false;
-        s_R_count_upeak++;
+        R_count_upeak++;
         s_swing_period_ms = s_R_swing_time_ms;
+        T_cycle_ms = s_swing_period_ms;
         s_R_time_afterup_ms = 0.0f;
         s_HC_Rswing4upcond = false;
+
+        // Clear latched gait mode after the swing leg's next upper peak.
+        if (s_gait_mode_latch_leg == GAIT_LATCH_R) {
+            s_gait_mode_latch_leg = GAIT_LATCH_NONE;
+            s_gait_mode = NONE;
+        }
     }
 
     if ((s_Ldeg[2] - s_Ldeg[1]) * (s_Ldeg[1] - s_Ldeg[0]) < s_var &&
@@ -615,10 +772,17 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         s_Ldeg[2] >= s_thres_up && s_L_time_upcond) {
         s_L_uppeak_val = s_Ldeg[2];
         s_L_time_upcond = false;
-        s_L_count_upeak++;
+        L_count_upeak++;
         s_swing_period_ms = s_L_swing_time_ms;
+        T_cycle_ms = s_swing_period_ms;
         s_L_time_afterup_ms = 0.0f;
         s_HC_Lswing4upcond = false;
+
+        // Clear latched gait mode after the swing leg's next upper peak.
+        if (s_gait_mode_latch_leg == GAIT_LATCH_L) {
+            s_gait_mode_latch_leg = GAIT_LATCH_NONE;
+            s_gait_mode = NONE;
+        }
     }
 
     // Lower peak detection
@@ -628,11 +792,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     if ((s_Rdeg[2]-s_Rdeg[1])*(s_Rdeg[1]-s_Rdeg[0]) < s_var &&
         (s_Rdeg[2] - s_Rdeg[1]) >= 0.0f &&
         s_Rdeg[2] <= s_R_lowpeak_val + 3.0f) {
-        s_R_count_dpeak++;
+        R_count_dpeak++;
         s_R_lowpeak_val = s_Rdeg[2];
         s_R_swing_time_ms = 0.0f;
         if (is_moving) {
-            s_R_g_knn_label = 0;
             Rstop_assist = false;
             Rflag_assist = true;
         }
@@ -644,19 +807,18 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     if ((s_Ldeg[2]-s_Ldeg[1])*(s_Ldeg[1]-s_Ldeg[0]) < s_var &&
         (s_Ldeg[2] - s_Ldeg[1]) >= 0.0f &&
         s_Ldeg[2] <= s_L_lowpeak_val + 3.0f) {
-        s_L_count_dpeak++;
+        L_count_dpeak++;
         s_L_lowpeak_val = s_Ldeg[2];
         s_L_swing_time_ms = 0.0f;
         if (is_moving) {
-            s_L_g_knn_label = 0;
             Lstop_assist = false;
             Lflag_assist = true;
         }
     }
 
     if (res_out) {
-        res_out->r_lower_peak_event = (s_R_count_dpeak != s_prev_count_dpeak_R);
-        res_out->l_lower_peak_event = (s_L_count_dpeak != s_prev_count_dpeak_L);
+        res_out->r_lower_peak_event = (R_count_dpeak != s_prev_count_dpeak_R);
+        res_out->l_lower_peak_event = (L_count_dpeak != s_prev_count_dpeak_L);
 
         // Rising-after-lower should only fire once when the flag was armed and then the rise condition is met.
         const bool r_rise_now = (Rflag_assist && (s_Rdeg[2] > s_R_lowpeak_val + 5.0f));
@@ -668,18 +830,18 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         res_out->l_stop_assist = Lstop_assist;
     }
 
-    s_prev_count_dpeak_R = s_R_count_dpeak;
-    s_prev_count_dpeak_L = s_L_count_dpeak;
+    s_prev_count_dpeak_R = R_count_dpeak;
+    s_prev_count_dpeak_L = L_count_dpeak;
     s_prev_Rflag_assist = Rflag_assist;
     s_prev_Lflag_assist = Lflag_assist;
 }
 
 static void adaptive_assist(const GaitRecognitionResult_t* rec,
-                            bool* trig_R, bool* trig_L,
+                            bool* out_trig_R, bool* out_trig_L,
                             float* out_tau_R, float* out_tau_L)
 {
-    if (trig_R) *trig_R = false;
-    if (trig_L) *trig_L = false;
+    if (out_trig_R) *out_trig_R = false;
+    if (out_trig_L) *out_trig_L = false;
     if (out_tau_R) *out_tau_R = 0.0f;
     if (out_tau_L) *out_tau_L = 0.0f;
 
@@ -688,23 +850,47 @@ static void adaptive_assist(const GaitRecognitionResult_t* rec,
 
     if (rec != NULL) {
         if (rec->r_uprise_after_lower) {
-            if (trig_R) *trig_R = true;
+            if (out_trig_R) *out_trig_R = true;
             Rflag_assist = false;
         }
         if (rec->l_uprise_after_lower) {
-            if (trig_L) *trig_L = true;
+            if (out_trig_L) *out_trig_L = true;
             Lflag_assist = false;
         }
     }
 
-    if (out_tau_R) *out_tau_R = r_stop ? 0.0f : assist_level;
-    if (out_tau_L) *out_tau_L = l_stop ? 0.0f : assist_level;
+    // Smoothly decay torque to 0 on STS/stop, instead of hard cutting.
+    // Requirement: when stop happens, decay should settle to (almost) 0 within the mode's rise time.
+    // Use 1st-order exponential: e(t) = exp(-t/T). Choose T such that e(Tr) = r.
+    // => T = -Tr / ln(r)
+    // Then discrete update: tau[k] = tau[k-1] + alpha*(target - tau[k-1]), alpha = dt/(T+dt)
+    const float dt_s = (CTRL_DT_MS * 0.001f);
+
+    // Mode rise time (seconds). If you have a real s_mode table elsewhere, wire it here.
+    // For now, satisfy the stated requirement: s_mode==0 has 0.1s rise time.
+    const float rise_time_s = 0.10f;
+
+    // Residual ratio at Tr (how close to target we want by the end of rise_time_s).
+    // 0.01 => within 1% (pretty much converged).
+    const float residual_ratio = 0.01f;
+    float T_decay_s = rise_time_s;
+    if (rise_time_s > 0.0f && residual_ratio > 0.0f && residual_ratio < 1.0f) {
+        T_decay_s = -rise_time_s / logf(residual_ratio);
+    }
+    if (T_decay_s < dt_s) T_decay_s = dt_s;
+    const float alpha = dt_s / (T_decay_s + dt_s);
+
+    static float s_tau_cmd_R = 0.0f;
+    static float s_tau_cmd_L = 0.0f;
+
+    const float target_R = r_stop ? 0.0f : assist_level;
+    const float target_L = l_stop ? 0.0f : assist_level;
+    s_tau_cmd_R = s_tau_cmd_R + alpha * (target_R - s_tau_cmd_R);
+    s_tau_cmd_L = s_tau_cmd_L + alpha * (target_L - s_tau_cmd_L);
+
+    if (out_tau_R) *out_tau_R = s_tau_cmd_R;
+    if (out_tau_L) *out_tau_L = s_tau_cmd_L;
 }
-
-/* --- Current thigh angle values --- */
-static float currentLeftThighAngle = 0.0f;
-static float currentRightThighAngle = 0.0f;
-
 
 
 /**
