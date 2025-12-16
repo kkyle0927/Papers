@@ -77,11 +77,9 @@ SOF_BYTES_BE = b"\xAA\x55"  # uint16 0xAA55 in big-endian stream
 #   int32  6개 (is_moving, hc_count, R/L upeak, R/L dpeak)
 #   uint8  2개 (tau_max_setting, s_gait_mode)
 #   float  1개 (s_g_knn_conf)
-#   float  8개 (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms, s_vel_HC, s_T_HC_s,
-#               s_norm_vel_HC, s_norm_T_HC, s_scaling_X)
-# NOTE: The currently running firmware (see Papers/KNN/Debug/KNN.list) uses sizeof(SavingData_t)=159,
-# so payload size is 153 (=159-6). That corresponds to 8 trailing floats here.
-STRUCT_FMT = '<IBBB21f6iBBf8f'
+#   float  9개 (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms, s_vel_HC, s_T_HC_s,
+#               s_norm_vel_HC, s_norm_T_HC, s_scaling_X, s_scaling_Y)
+STRUCT_FMT = '<IBBB21f6iBBf9f'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
 # 전체 패킷 예상 길이: sof(2) + len(2) + payload + crc(2)
@@ -180,13 +178,14 @@ def sanity_check_row(row, last_good_row=None):
     except Exception:
         return False, "is_moving missing"
 
-    # tau_max_setting is informative only (do not treat as a hard gate).
-    # It is frequently the first field to look corrupted when a packet is slightly misaligned.
-    # We still display it in the UI, but we don't drop the whole packet based on its value.
+    # tau_max_setting: firmware-dependent; some builds may use 0 as default/unknown.
+    # Keep this check permissive to avoid dropping otherwise-valid packets.
     try:
-        _ = int(row[CSV_COLS.index("tau_max_setting")])
+        tau = int(row[CSV_COLS.index("tau_max_setting")])
+        if not (0 <= tau <= 7):
+            return False, f"tau_max_setting out of range ({tau})"
     except Exception:
-        pass
+        return False, "tau_max_setting missing"
 
     # h10Mode should be small enum
     try:
@@ -247,8 +246,8 @@ def decode_packet(data_tuple):
     #   [25..30] 6 int32
     #   [31..32] 2 uint8 (tau_max_setting, s_gait_mode)
     #   [33]     float (s_g_knn_conf)
-    #   [34..41] 8 floats tail
-    expected_elems = 4 + 21 + 6 + 2 + 1 + 8
+    #   [34..42] 9 floats tail
+    expected_elems = 4 + 21 + 6 + 2 + 1 + 9
     if len(data_tuple) != expected_elems:
         raise ValueError(f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})")
 
@@ -279,9 +278,9 @@ def decode_packet(data_tuple):
     base = 4 + 21 + 6 + 2
     row[33] = float(data_tuple[base])
 
-    # 5) 8 floats tail
+    # 5) 9 floats tail
     base = 4 + 21 + 6 + 2 + 1
-    for i in range(8):
+    for i in range(9):
         row[34 + i] = float(data_tuple[base + i])
 
     return row
@@ -463,6 +462,7 @@ class SerialWorker(QtCore.QObject):
     finished = pyqtSignal()
     connection_failed = pyqtSignal(str)
     packet_error_count = pyqtSignal(int)   # 패킷 에러 누적 개수 신호
+    sanity_error_count = pyqtSignal(int)   # CRC/len OK지만 값이 비정상인 경우(산티) 카운트
 
     def __init__(self, port_name, baudrate=DEFAULT_BAUD, timeout=DEFAULT_TIMEOUT, parent=None):
         super().__init__(parent)
@@ -471,6 +471,7 @@ class SerialWorker(QtCore.QObject):
         self.timeout = timeout
         self._running = False
         self._error_count = 0
+        self._sanity_error_count = 0
         self._consecutive_packet_errors = 0
         self._consecutive_sanity_failures = 0
         self._last_err_log_ts = 0.0
@@ -528,6 +529,13 @@ class SerialWorker(QtCore.QObject):
         if reason:
             msg = f"Packet error #{self._error_count}: {reason}"
             self.status_msg.emit(msg)
+            self.debug_msg.emit(msg)
+
+    def _inc_sanity_error(self, reason: str = ""):
+        self._sanity_error_count += 1
+        self.sanity_error_count.emit(self._sanity_error_count)
+        if reason:
+            msg = f"Sanity error #{self._sanity_error_count}: {reason}"
             self.debug_msg.emit(msg)
 
     def _record_error_tag(self, tag: str):
@@ -786,6 +794,7 @@ class SerialWorker(QtCore.QObject):
                                     had_error = True
                                     reason = f"Sanity check failed: {why}"
                                     self._record_error_tag("sanity")
+                                    self._inc_sanity_error(why)
                                     self._consecutive_sanity_failures += 1
                                 else:
                                     self._consecutive_sanity_failures = 0
@@ -1344,6 +1353,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.error_label.setFont(font)
         state_layout.addWidget(self.error_label)
 
+        self.sanity_error_label = QtWidgets.QLabel("Sanity errors: 0")
+        self.sanity_error_label.setFont(font)
+        state_layout.addWidget(self.sanity_error_label)
+
         # 지속적으로 남는 디버그/수신 상태 표시 (status bar는 금방 지나가서)
         self.debug_label = QtWidgets.QLabel(
             f"Expected total: {EXPECTED_TOTAL_PACKET_SIZE} bytes\n"
@@ -1523,6 +1536,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.serial_worker.finished.connect(self.on_serial_finished)
         self.serial_worker.connection_failed.connect(self.on_connection_failed)
         self.serial_worker.packet_error_count.connect(self.on_packet_error_count)
+        self.serial_worker.sanity_error_count.connect(self.on_sanity_error_count)
 
         self.serial_thread.start()
 
@@ -1532,6 +1546,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_bar.showMessage(f"Connecting to {port_name} ...")
         # 에러 카운터 초기화
         self.error_label.setText("Packet errors: 0")
+        self.sanity_error_label.setText("Sanity errors: 0")
 
     def on_monitor_only_clicked(self):
         port_name = self.combo_port.currentText()
@@ -1559,6 +1574,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.serial_worker.finished.connect(self.on_serial_finished)
         self.serial_worker.connection_failed.connect(self.on_connection_failed)
         self.serial_worker.packet_error_count.connect(self.on_packet_error_count)
+        self.serial_worker.sanity_error_count.connect(self.on_sanity_error_count)
 
         self.serial_thread.start()
 
@@ -1567,6 +1583,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_disconnect.setEnabled(True)
         self.status_bar.showMessage(f"Connecting to {port_name} (monitor only) ...")
         self.error_label.setText("Packet errors: 0")
+        self.sanity_error_label.setText("Sanity errors: 0")
 
     def on_disconnect_clicked(self):
         if self.serial_worker is not None:
@@ -1782,6 +1799,11 @@ class MainWindow(QtWidgets.QMainWindow):
     @pyqtSlot(int)
     def on_packet_error_count(self, n):
         self.error_label.setText(f"Packet errors: {n}")
+
+    @pyqtSlot(int)
+    def on_sanity_error_count(self, n):
+        if getattr(self, "sanity_error_label", None) is not None:
+            self.sanity_error_label.setText(f"Sanity errors: {n}")
 
     def closeEvent(self, event):
         if self.serial_worker is not None:
