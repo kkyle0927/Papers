@@ -234,42 +234,48 @@ def decode_packet(data_tuple):
     #   [30..31] 2 uint8 (tau_max_setting, s_gait_mode)
     #   [32]     float (s_g_knn_conf)
     #   [33..41] 9 floats tail
-    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 9  # 42
+    
+    # 총 42개 요소
+    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 9 
     if len(data_tuple) != expected_elems:
         raise ValueError(
             f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})"
         )
 
-    row = [0] * len(CSV_COLS)
+    row = [0] * len(CSV_COLS) # len(CSV_COLS)는 42여야 함
 
-    # 0) loopCnt + 3 uint8
+    # 0) loopCnt + 3 uint8 (인덱스 0~3)
     row[0] = int(data_tuple[0])
     row[1] = int(data_tuple[1])
     row[2] = int(data_tuple[2])
     row[3] = int(data_tuple[3])
 
-    # 1) 20 floats
+    # 1) 20 floats (인덱스 4~23)
     for i in range(20):
         row[4 + i] = float(data_tuple[4 + i])
 
-    # 2) 6 int32
+    # 2) 6 int32 (인덱스 24~29)
+    # [수정] 기존 25+i -> 24+i로 변경
     base = 4 + 20
     for i in range(6):
-        row[25 + i] = int(data_tuple[base + i])
+        row[24 + i] = int(data_tuple[base + i])
 
-    # 3) 2 uint8
+    # 3) 2 uint8 (인덱스 30~31)
+    # [수정] 기존 31, 32 -> 30, 31로 변경
     base = 4 + 20 + 6
-    row[31] = int(data_tuple[base + 0])  # tau_max_setting
-    row[32] = int(data_tuple[base + 1])  # s_gait_mode
+    row[30] = int(data_tuple[base + 0])  # tau_max_setting
+    row[31] = int(data_tuple[base + 1])  # s_gait_mode
 
-    # 4) s_g_knn_conf
+    # 4) s_g_knn_conf (인덱스 32)
+    # [수정] 기존 33 -> 32로 변경
     base = 4 + 20 + 6 + 2
-    row[33] = float(data_tuple[base])
+    row[32] = float(data_tuple[base])
 
-    # 5) tail 9 floats -> CSV columns 34..42
+    # 5) tail 9 floats (인덱스 33~41)
+    # [수정] 기존 34+i -> 33+i로 변경 (최대 인덱스 41이 됨)
     base = 4 + 20 + 6 + 2 + 1
     for i in range(9):
-        row[34 + i] = float(data_tuple[base + i])
+        row[33 + i] = float(data_tuple[base + i])
 
     return row
 
@@ -1275,17 +1281,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 items[name] = item
             self._ts_items.append(items)
 
-        # --- FIXED Y-RANGES (requested) ---
-        # Plot1: thigh angles (example) -> -20 ~ 80
-        self.plot_widgets[0].setYRange(-20.0, 80.0, padding=0.0)
+# --- FIXED Y-RANGES (requested) ---
+        # Plot1: thigh angles -> 기존 -20~80에서 -30~90으로 변경
+        self.plot_widgets[0].setYRange(-30.0, 90.0, padding=0.0)
 
-        # Plot2: hip torque -> -20 ~ 20
+        # Plot2: hip torque -> -20 ~ 20 (유지)
         self.plot_widgets[1].setYRange(-20.0, 20.0, padding=0.0)
 
-        # Plot3: T_swing_ms etc -> 0 ~ 700
-        self.plot_widgets[2].setYRange(0.0, 700.0, padding=0.0)
+        # Plot3: T_swing_ms etc -> 기존 0~700에서 0~1000으로 변경
+        self.plot_widgets[2].setYRange(0.0, 1000.0, padding=0.0)
 
-        # 4번 플롯은 scatter 전용 설정
+        # 4번 플롯은 scatter 전용 설정 (유지)
         self.plot_widgets[3].setLabel("bottom", "s_norm_vel_HC")
         self.plot_widgets[3].setLabel("left", "s_norm_T_HC")
         self.plot_widgets[3].setXRange(0.0, 1.5, padding=0.0)
