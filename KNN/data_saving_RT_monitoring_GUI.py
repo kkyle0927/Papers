@@ -1679,14 +1679,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # Plot 4: scatter (fixed axes) - last N points (do not clear the item, just overwrite spots)
         if self._hc_scatter_item is not None:
             spots = []
-            for x, y, br in zip(self._hc_points_x, self._hc_points_y, self._hc_points_brush):
+            total_pts = len(self._hc_points_x)
+            for idx, (x, y, br) in enumerate(zip(self._hc_points_x, self._hc_points_y, self._hc_points_brush)):
                 color = br.color() if isinstance(br, QtGui.QBrush) else QtGui.QColor("#6b7280")
+                is_latest = (idx == total_pts - 1)
                 spots.append({
                     "pos": (x, y),
                     "brush": br,
                     "pen": pg.mkPen(color),
                     "size": 8,
-                    "symbol": "o",
+                    "symbol": "star" if is_latest else "o",
                 })
             self._hc_scatter_item.setData(spots)
 

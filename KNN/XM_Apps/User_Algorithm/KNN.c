@@ -888,7 +888,15 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         const float GAP_MAX_MS = 1200.0f;
         const float GAP_ALPHA  = 0.2f;
         const float meas_clamped = clampf_ud(measured_swing_ms, GAP_MIN_MS, GAP_MAX_MS);
-        s_t_gap_R_ms = (1.0f - GAP_ALPHA) * s_t_gap_R_ms + GAP_ALPHA * meas_clamped;
+        const float prev_gap_R = s_t_gap_R_ms;
+        float updated_gap_R = (1.0f - GAP_ALPHA) * prev_gap_R + GAP_ALPHA * meas_clamped;
+        if (prev_gap_R > 0.0f) {
+            const float min_gap_R = prev_gap_R * 0.7f;
+            const float max_gap_R = prev_gap_R * 1.3f;
+            updated_gap_R = clampf_ud(updated_gap_R, min_gap_R, max_gap_R);
+        }
+        updated_gap_R = clampf_ud(updated_gap_R, 200.0f, 800.0f);
+        s_t_gap_R_ms = updated_gap_R;
         s_dbg_t_gap_R_ms = s_t_gap_R_ms;
 
         // Store to SOS/STS bucket based on the most recent HC classification.
@@ -947,7 +955,15 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         const float GAP_MAX_MS = 1200.0f;
         const float GAP_ALPHA  = 0.2f;
         const float meas_clamped = clampf_ud(measured_swing_ms, GAP_MIN_MS, GAP_MAX_MS);
-        s_t_gap_L_ms = (1.0f - GAP_ALPHA) * s_t_gap_L_ms + GAP_ALPHA * meas_clamped;
+        const float prev_gap_L = s_t_gap_L_ms;
+        float updated_gap_L = (1.0f - GAP_ALPHA) * prev_gap_L + GAP_ALPHA * meas_clamped;
+        if (prev_gap_L > 0.0f) {
+            const float min_gap_L = prev_gap_L * 0.7f;
+            const float max_gap_L = prev_gap_L * 1.3f;
+            updated_gap_L = clampf_ud(updated_gap_L, min_gap_L, max_gap_L);
+        }
+        updated_gap_L = clampf_ud(updated_gap_L, 200.0f, 800.0f);
+        s_t_gap_L_ms = updated_gap_L;
         s_dbg_t_gap_L_ms = s_t_gap_L_ms;
 
         // Store to SOS/STS bucket based on the most recent HC classification.
