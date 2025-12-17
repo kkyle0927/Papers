@@ -101,10 +101,13 @@ typedef struct __attribute__((packed)) {
     #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
     _Static_assert(offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc) == sizeof(SavingData_t),
                    "SavingData_t layout error: 'crc' must be the last field");
+    _Static_assert(sizeof(SavingData_t) == 191,
+                   "SavingData_t size mismatch: update host parser struct");
     #else
     typedef char SavingData_t_crc_must_be_last[
         ((offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc)) == sizeof(SavingData_t)) ? 1 : -1
     ];
+    typedef char SavingData_t_size_must_match[(sizeof(SavingData_t) == 191) ? 1 : -1];
     #endif
 #endif
 
