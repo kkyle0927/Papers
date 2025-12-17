@@ -86,9 +86,9 @@ static FVecSlot_t s_fvec_buf_RH[F_VECTOR_BUFF_SIZE];
 static const float kManuscriptFVec[4] = { 0.0f, 3.0f, 0.0f, 400.0f };
 
 // Assist torque amplitude (tau_max) controlled by XM_BTN_1 click.
-// Cycles: 1 -> 2 -> ... -> 7 -> 1 -> ...
+// Cycles: 0 -> 1 -> 2 -> ... -> 7 -> 0 -> ...
 // Exposed (non-static) for Live Expressions / CDC.
-volatile int tau_max_setting = 1;
+volatile int tau_max_setting = 0;
 
 
 /**
@@ -174,13 +174,17 @@ volatile int L_count_dpeak = 0;
 volatile int hc_count = 0;
 
 // Timing parameters are in absolute time (ms), not ticks.
-static float s_t_gap_ms = 400.0f;
+// Adaptive per-leg gate time (ms). Initialized to 400 ms.
+static float s_t_gap_R_ms = 400.0f;
+static float s_t_gap_L_ms = 400.0f;
+// Upper-peak angle threshold (deg). Adaptive from last STS-classified HC:
+// threshold = 0.8 * (swing-leg angle at that HC). Initial value requested: 10 deg.
 static float s_thres_up = 10.0f;
+// Lower-peak baseline threshold (deg). Adaptive from last STS-classified HC:
+// threshold = 0.8 * (swing-leg angle at that HC). Initial value requested: 10 deg.
 static float s_thres_down = 10.0f;
 static float s_R_lowpeak_val = 10.0f;
 static float s_L_lowpeak_val = 10.0f;
-static float s_R_uppeak_val = 50.0f;
-static float s_L_uppeak_val = 50.0f;
 static float s_var = 0.0f;
 
 static float s_R_time_afterup_ms = 0.0f;
@@ -189,9 +193,20 @@ static float s_HC_time_after_ms = 0.0f;
 // Normalization swing period (ms): uses mean of latest SOS/STS swing times.
 static float s_swing_period_ms = 400.0f;
 
+// Adaptive HC gate based on swing-leg thigh angle magnitude (deg).
+// Updated when an HC is classified as STS: threshold = 0.6 * (swing-leg angle at that HC).
+// Initial value requested: 10 deg.
+static float s_hc_deg_thresh = 10.0f;
+
 // Track swing time separately by classification category (no left/right split).
 static float s_T_swing_SOS_ms = 400.0f;
 static float s_T_swing_STS_ms = 400.0f;
+// For normalization, keep the most-recent swing times whose KNN confidence is exactly 1.0.
+// Initialized to 400 ms for both classes, as requested.
+static float s_T_swing_SOS_ms_conf1 = 400.0f;
+static float s_T_swing_STS_ms_conf1 = 400.0f;
+static bool  s_T_swing_SOS_has_conf1 = false;
+static bool  s_T_swing_STS_has_conf1 = false;
 static bool s_last_HC_class_is_valid = false;
 static bool s_last_HC_is_STS = false;
 
@@ -201,6 +216,9 @@ volatile float T_swing_ms = 400.0f;
 // Debug-visible latest swing times by class (ms).
 volatile float T_swing_SOS_ms = 400.0f;
 volatile float T_swing_STS_ms = 400.0f;
+// Debug-visible most recent conf==1 swing times.
+volatile float T_swing_SOS_ms_conf1 = 400.0f;
+volatile float T_swing_STS_ms_conf1 = 400.0f;
 
 static float s_vel_HC = 0.0f;
 static float s_R_swing_time_ms = 0.0f;
@@ -221,6 +239,13 @@ volatile float s_dbg_norm_vel_HC = 0.0f;
 volatile float s_dbg_norm_T_HC = 0.0f;
 volatile float s_dbg_scaling_X = 105.6426f;
 volatile float s_dbg_scaling_Y = 835.8209f;
+
+// CDC/Live-expression mirrors for adaptive parameters
+volatile float s_dbg_t_gap_R_ms = 400.0f;
+volatile float s_dbg_t_gap_L_ms = 400.0f;
+volatile float s_dbg_hc_deg_thresh = 10.0f;
+volatile float s_dbg_thres_up = 10.0f;
+volatile float s_dbg_thres_down = 10.0f;
 
 #ifndef KNN_REF_COUNT
 #  define KNN_REF_COUNT    REF_COUNT
@@ -417,7 +442,7 @@ static void Standby_Loop(void)
     // Update tau_max on each button-1 click
     XM_button1 = XM_GetButtonEvent(XM_BTN_1);
     if (XM_button1 == XM_BTN_CLICK) {
-        if (tau_max_setting >= 7) tau_max_setting = 1;
+        if (tau_max_setting >= 7) tau_max_setting = 0;
         else tau_max_setting += 1;
     }
 
@@ -483,7 +508,7 @@ static void Active_Loop(void)
     // Update tau_max on each button-1 click
     XM_button1 = XM_GetButtonEvent(XM_BTN_1);
     if (XM_button1 == XM_BTN_CLICK) {
-        if (tau_max_setting >= 7) tau_max_setting = 1;
+        if (tau_max_setting >= 7) tau_max_setting = 0;
         else tau_max_setting += 1;
     }
 
@@ -554,6 +579,56 @@ static inline float KNN_LPF(float x, float* y_prev, float alpha)
 {
     *y_prev = (1.0f - alpha) * (*y_prev) + alpha * x;
     return *y_prev;
+}
+
+static inline float clampf_ud(float x, float lo, float hi)
+{
+    if (x < lo) return lo;
+    if (x > hi) return hi;
+    return x;
+}
+
+static inline void HC_UpdateDegThresh_OnSTS(float swing_deg_meas)
+{
+    // Unified (shared) threshold for both left and right.
+    // Spec: threshold = 0.6 * (swing-leg angle at STS-classified HC), initial 10 deg.
+    const float HC_DEG_MIN = 5.0f;
+    const float HC_DEG_MAX = 90.0f;
+    const float DEG_ALPHA  = 0.2f;
+
+    const float deg_meas = clampf_ud(swing_deg_meas, HC_DEG_MIN, HC_DEG_MAX);
+    const float deg_target = 0.6f * deg_meas;
+    s_hc_deg_thresh = (1.0f - DEG_ALPHA) * s_hc_deg_thresh + DEG_ALPHA * deg_target;
+    s_dbg_hc_deg_thresh = s_hc_deg_thresh;
+}
+
+static inline void UpPeak_UpdateThresh_OnSTS(float swing_deg_meas)
+{
+    // Adaptive upper-peak angle threshold shared for both legs.
+    // Spec: s_thres_up = 0.8 * (swing-leg angle at STS-classified HC), initial 10 deg.
+    const float UP_DEG_MIN = 5.0f;
+    const float UP_DEG_MAX = 90.0f;
+    const float UP_ALPHA   = 0.2f;
+
+    const float deg_meas = clampf_ud(swing_deg_meas, UP_DEG_MIN, UP_DEG_MAX);
+    const float deg_target = 0.8f * deg_meas;
+    s_thres_up = (1.0f - UP_ALPHA) * s_thres_up + UP_ALPHA * deg_target;
+    s_dbg_thres_up = s_thres_up;
+}
+
+static inline void LowPeak_UpdateThresh_OnSTS(float swing_deg_meas)
+{
+    // Adaptive lower-peak baseline threshold shared for both legs.
+    // Spec: s_thres_down from last STS-classified HC swing-leg angle.
+    // Use same 0.8 scaling as upper threshold for consistency.
+    const float DOWN_DEG_MIN = 5.0f;
+    const float DOWN_DEG_MAX = 90.0f;
+    const float DOWN_ALPHA   = 0.2f;
+
+    const float deg_meas = clampf_ud(swing_deg_meas, DOWN_DEG_MIN, DOWN_DEG_MAX);
+    const float deg_target = 0.8f * deg_meas;
+    s_thres_down = (1.0f - DOWN_ALPHA) * s_thres_down + DOWN_ALPHA * deg_target;
+    s_dbg_thres_down = s_thres_down;
 }
 
 static int knn_2label_majority_ud(const float (*xy)[2], int n, int split,
@@ -704,17 +779,28 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     const int is_moving = (feat != NULL) ? feat->is_moving : 0;
     if (res_out) res_out->is_moving = is_moving;
 
-    if (s_R_time_afterup_ms >= s_t_gap_ms) s_R_time_upcond = true;
-    if (s_L_time_afterup_ms >= s_t_gap_ms) s_L_time_upcond = true;
-    if (s_HC_time_after_ms >= s_t_gap_ms) s_HC_time_upcond = true;
+    if (s_R_time_afterup_ms >= s_t_gap_R_ms) s_R_time_upcond = true;
+    if (s_L_time_afterup_ms >= s_t_gap_L_ms) s_L_time_upcond = true;
 
-    if (s_HC_time_upcond && (s_Rdeg[2] - s_Ldeg[2]) * (s_Rdeg[1] - s_Ldeg[1]) <= 0.0f &&
-        s_Rdeg[2] > s_thres_down && s_Ldeg[2] > s_thres_down) {
-        s_HC_time_upcond = false;
-        s_HC_time_after_ms = 0.0f;
-        hc_count++;
+    if ((s_Rdeg[2] - s_Ldeg[2]) * (s_Rdeg[1] - s_Ldeg[1]) <= 0.0f) {
+        // Determine swing side for this HC candidate (same rule as before).
+        // Apply HC gate time depending on swing side.
+        const bool is_right_swing = (s_Rdeg[2] - s_Rdeg[1] >= s_Ldeg[2] - s_Ldeg[1]);
+        const float hc_gap_ms = is_right_swing ? s_t_gap_R_ms : s_t_gap_L_ms;
+        s_HC_time_upcond = (s_HC_time_after_ms >= hc_gap_ms);
 
-        if (s_Rdeg[2] - s_Rdeg[1] >= s_Ldeg[2] - s_Ldeg[1] && s_L_uppeak_val > 40.0f) {
+        // Swing-leg angle gate (deg), adaptive from last STS-classified HC.
+        const float swing_deg = is_right_swing ? s_Rdeg[2] : s_Ldeg[2];
+        const bool swing_deg_ok = (swing_deg >= s_hc_deg_thresh);
+
+        if (!s_HC_time_upcond || !swing_deg_ok) {
+            // Not enough time elapsed (per swing side) or swing angle too small; ignore this HC candidate.
+        } else {
+            s_HC_time_upcond = false;
+            s_HC_time_after_ms = 0.0f;
+            hc_count++;
+
+            if (is_right_swing) {
             s_HC_Rswing4upcond = true;
             s_vel_HC = (s_Rdeg[2] - s_Rdeg[1]) / (CTRL_DT_MS * 0.001f);
             s_T_HC_ms = s_R_swing_time_ms;
@@ -739,10 +825,16 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             // Remember the most recent HC classification (ignore left/right).
             s_last_HC_class_is_valid = true;
             s_last_HC_is_STS = (s_gait_mode == RSTS);
+            // Update adaptive angle threshold only when classified as STS.
+            if (s_last_HC_is_STS) {
+                HC_UpdateDegThresh_OnSTS(s_Rdeg[2]);
+                UpPeak_UpdateThresh_OnSTS(s_Rdeg[2]);
+                LowPeak_UpdateThresh_OnSTS(s_Rdeg[2]);
+            }
             if (s_gait_mode == RSTS) {
                 Rstop_assist = true;
             }
-        } else if (s_Ldeg[2] - s_Ldeg[1] >= s_Rdeg[2] - s_Rdeg[1] && s_R_uppeak_val > 40.0f) {
+        } else if (!is_right_swing) {
             s_HC_Lswing4upcond = true;
             s_vel_HC = (s_Ldeg[2] - s_Ldeg[1]) / (CTRL_DT_MS * 0.001f);
             s_T_HC_ms = s_L_swing_time_ms;
@@ -767,9 +859,16 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             // Remember the most recent HC classification (ignore left/right).
             s_last_HC_class_is_valid = true;
             s_last_HC_is_STS = (s_gait_mode == LSTS);
+            // Update adaptive angle threshold only when classified as STS.
+            if (s_last_HC_is_STS) {
+                HC_UpdateDegThresh_OnSTS(s_Ldeg[2]);
+                UpPeak_UpdateThresh_OnSTS(s_Ldeg[2]);
+                LowPeak_UpdateThresh_OnSTS(s_Ldeg[2]);
+            }
             if (s_gait_mode == LSTS) {
                 Lstop_assist = true;
             }
+        }
         }
     }
 
@@ -777,26 +876,51 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     if ((s_Rdeg[2] - s_Rdeg[1]) * (s_Rdeg[1] - s_Rdeg[0]) < s_var &&
         (s_Rdeg[2] - s_Rdeg[1]) < 0.0f &&
         s_Rdeg[2] >= s_thres_up && s_R_time_upcond) {
-        s_R_uppeak_val = s_Rdeg[2];
         s_R_time_upcond = false;
         R_count_upeak++;
 
         // Measured swing time: from lower peak reset to this upper peak.
         const float measured_swing_ms = s_R_swing_time_ms;
+        // Adapt right-side gate to the measured swing duration.
+        // Use clamp + 1st-order LPF to suppress outliers.
+        // NOTE: this is a gate time used for event de-bounce, not the normalization swing period.
+        const float GAP_MIN_MS = 150.0f;
+        const float GAP_MAX_MS = 1200.0f;
+        const float GAP_ALPHA  = 0.2f;
+        const float meas_clamped = clampf_ud(measured_swing_ms, GAP_MIN_MS, GAP_MAX_MS);
+        s_t_gap_R_ms = (1.0f - GAP_ALPHA) * s_t_gap_R_ms + GAP_ALPHA * meas_clamped;
+        s_dbg_t_gap_R_ms = s_t_gap_R_ms;
 
         // Store to SOS/STS bucket based on the most recent HC classification.
         if (s_last_HC_class_is_valid) {
             if (s_last_HC_is_STS) {
                 s_T_swing_STS_ms = measured_swing_ms;
                 T_swing_STS_ms = s_T_swing_STS_ms;
+                if (s_g_knn_conf == 1.0f) {
+                    s_T_swing_STS_ms_conf1 = measured_swing_ms;
+                    s_T_swing_STS_has_conf1 = true;
+                    T_swing_STS_ms_conf1 = s_T_swing_STS_ms_conf1;
+                }
             } else {
                 s_T_swing_SOS_ms = measured_swing_ms;
                 T_swing_SOS_ms = s_T_swing_SOS_ms;
+                if (s_g_knn_conf == 1.0f) {
+                    s_T_swing_SOS_ms_conf1 = measured_swing_ms;
+                    s_T_swing_SOS_has_conf1 = true;
+                    T_swing_SOS_ms_conf1 = s_T_swing_SOS_ms_conf1;
+                }
             }
         }
 
-        // Normalization uses mean of latest SOS/STS swing times.
-        s_swing_period_ms = 0.5f * (s_T_swing_SOS_ms + s_T_swing_STS_ms);
+        // Normalization uses mean of the most recent SOS/STS swing times whose conf==1.
+        // Before both are observed (early after gait start), use initial 400/400.
+        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 400.0f;
+        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 400.0f;
+        if (s_T_swing_SOS_has_conf1 && s_T_swing_STS_has_conf1) {
+            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
+        } else {
+            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
+        }
         T_swing_ms = s_swing_period_ms;
         s_R_time_afterup_ms = 0.0f;
         s_HC_Rswing4upcond = false;
@@ -811,26 +935,51 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     if ((s_Ldeg[2] - s_Ldeg[1]) * (s_Ldeg[1] - s_Ldeg[0]) < s_var &&
         (s_Ldeg[2] - s_Ldeg[1]) < 0.0f &&
         s_Ldeg[2] >= s_thres_up && s_L_time_upcond) {
-        s_L_uppeak_val = s_Ldeg[2];
         s_L_time_upcond = false;
         L_count_upeak++;
 
         // Measured swing time: from lower peak reset to this upper peak.
         const float measured_swing_ms = s_L_swing_time_ms;
+        // Adapt left-side gate to the measured swing duration.
+        // Use clamp + 1st-order LPF to suppress outliers.
+        // NOTE: this is a gate time used for event de-bounce, not the normalization swing period.
+        const float GAP_MIN_MS = 150.0f;
+        const float GAP_MAX_MS = 1200.0f;
+        const float GAP_ALPHA  = 0.2f;
+        const float meas_clamped = clampf_ud(measured_swing_ms, GAP_MIN_MS, GAP_MAX_MS);
+        s_t_gap_L_ms = (1.0f - GAP_ALPHA) * s_t_gap_L_ms + GAP_ALPHA * meas_clamped;
+        s_dbg_t_gap_L_ms = s_t_gap_L_ms;
 
         // Store to SOS/STS bucket based on the most recent HC classification.
         if (s_last_HC_class_is_valid) {
             if (s_last_HC_is_STS) {
                 s_T_swing_STS_ms = measured_swing_ms;
                 T_swing_STS_ms = s_T_swing_STS_ms;
+                if (s_g_knn_conf == 1.0f) {
+                    s_T_swing_STS_ms_conf1 = measured_swing_ms;
+                    s_T_swing_STS_has_conf1 = true;
+                    T_swing_STS_ms_conf1 = s_T_swing_STS_ms_conf1;
+                }
             } else {
                 s_T_swing_SOS_ms = measured_swing_ms;
                 T_swing_SOS_ms = s_T_swing_SOS_ms;
+                if (s_g_knn_conf == 1.0f) {
+                    s_T_swing_SOS_ms_conf1 = measured_swing_ms;
+                    s_T_swing_SOS_has_conf1 = true;
+                    T_swing_SOS_ms_conf1 = s_T_swing_SOS_ms_conf1;
+                }
             }
         }
 
-        // Normalization uses mean of latest SOS/STS swing times.
-        s_swing_period_ms = 0.5f * (s_T_swing_SOS_ms + s_T_swing_STS_ms);
+        // Normalization uses mean of the most recent SOS/STS swing times whose conf==1.
+        // Before both are observed (early after gait start), use initial 400/400.
+        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 400.0f;
+        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 400.0f;
+        if (s_T_swing_SOS_has_conf1 && s_T_swing_STS_has_conf1) {
+            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
+        } else {
+            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
+        }
         T_swing_ms = s_swing_period_ms;
         s_L_time_afterup_ms = 0.0f;
         s_HC_Lswing4upcond = false;
@@ -936,9 +1085,6 @@ static void adaptive_assist(const GaitRecognitionResult_t* rec,
     }
     if (T_decay_s < dt_s) T_decay_s = dt_s;
     const float alpha = dt_s / (T_decay_s + dt_s);
-
-    static float s_tau_cmd_R = 0.0f;
-    static float s_tau_cmd_L = 0.0f;
 
     const float target_R = r_stop ? 0.0f : assist_level;
     const float target_L = l_stop ? 0.0f : assist_level;

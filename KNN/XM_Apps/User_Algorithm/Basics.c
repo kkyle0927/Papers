@@ -60,12 +60,21 @@ void FillAndSendSavingData(void)
     SavingData.T_swing_ms     = (float)T_swing_ms;
     SavingData.T_swing_SOS_ms = (float)T_swing_SOS_ms;
     SavingData.T_swing_STS_ms = (float)T_swing_STS_ms;
+    SavingData.T_swing_SOS_ms_conf1 = (float)T_swing_SOS_ms_conf1;
+    SavingData.T_swing_STS_ms_conf1 = (float)T_swing_STS_ms_conf1;
     SavingData.s_vel_HC       = (float)s_vel_HC_dbg;
     SavingData.s_T_HC_s       = (float)s_T_HC_s_dbg;
     SavingData.s_norm_vel_HC  = (float)s_dbg_norm_vel_HC;
     SavingData.s_norm_T_HC    = (float)s_dbg_norm_T_HC;
     SavingData.s_scaling_X    = (float)s_dbg_scaling_X;
     SavingData.s_scaling_Y    = (float)s_dbg_scaling_Y;
+
+    // Adaptive parameters
+    SavingData.s_t_gap_R_ms    = (float)s_dbg_t_gap_R_ms;
+    SavingData.s_t_gap_L_ms    = (float)s_dbg_t_gap_L_ms;
+    SavingData.s_hc_deg_thresh = (float)s_dbg_hc_deg_thresh;
+    SavingData.s_thres_up      = (float)s_dbg_thres_up;
+    SavingData.s_thres_down    = (float)s_dbg_thres_down;
 
     // 3) 헤더/CRC 설정
     // NOTE: 'len' MUST match the actual transmitted byte count.

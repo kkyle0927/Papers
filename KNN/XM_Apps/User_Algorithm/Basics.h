@@ -68,12 +68,22 @@ typedef struct __attribute__((packed)) {
     float T_swing_ms;
     float T_swing_SOS_ms;
     float T_swing_STS_ms;
+    // Most recent swing times whose KNN confidence was exactly 1.0 (used for normalization).
+    float T_swing_SOS_ms_conf1;
+    float T_swing_STS_ms_conf1;
     float s_vel_HC;
     float s_T_HC_s;
     float s_norm_vel_HC;
     float s_norm_T_HC;
     float s_scaling_X;
     float s_scaling_Y;
+
+    // Adaptive parameters (debug/analysis)
+    float s_t_gap_R_ms;
+    float s_t_gap_L_ms;
+    float s_hc_deg_thresh;
+    float s_thres_up;
+    float s_thres_down;
 
     uint16_t crc;
 } SavingData_t;
@@ -131,12 +141,21 @@ extern volatile float s_g_knn_conf;
 extern volatile float T_swing_ms;
 extern volatile float T_swing_SOS_ms;
 extern volatile float T_swing_STS_ms;
+extern volatile float T_swing_SOS_ms_conf1;
+extern volatile float T_swing_STS_ms_conf1;
 extern volatile float s_vel_HC_dbg;
 extern volatile float s_T_HC_s_dbg;
 extern volatile float s_dbg_norm_vel_HC;
 extern volatile float s_dbg_norm_T_HC;
 extern volatile float s_dbg_scaling_X;
 extern volatile float s_dbg_scaling_Y;
+
+// From KNN.c (adaptive parameters; expose via volatile mirrors for telemetry)
+extern volatile float s_dbg_t_gap_R_ms;
+extern volatile float s_dbg_t_gap_L_ms;
+extern volatile float s_dbg_hc_deg_thresh;
+extern volatile float s_dbg_thres_up;
+extern volatile float s_dbg_thres_down;
 
 #define TRANSMIT_SOF  (0xAA55u)
 

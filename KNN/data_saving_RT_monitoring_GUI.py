@@ -80,10 +80,12 @@ SOF_BYTES_LE = b"\x55\xAA"  # uint16 0xAA55 in little-endian stream
 #   int32  6개   (is_moving, hc_count, R/L upeak, R/L dpeak)
 #   uint8  2개   (tau_max_setting, s_gait_mode)
 #   float  1개   (s_g_knn_conf)
-#   float  9개   (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms, s_vel_HC, s_T_HC_s,
-#                 s_norm_vel_HC, s_norm_T_HC, s_scaling_X, s_scaling_Y)
-STRUCT_FMT = '<IBBB20f6iBBf9f'
-PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)  # 153
+#   float  16c  (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms,
+#                T_swing_SOS_ms_conf1, T_swing_STS_ms_conf1,
+#                s_vel_HC, s_T_HC_s, s_norm_vel_HC, s_norm_T_HC, s_scaling_X, s_scaling_Y,
+#                s_t_gap_R_ms, s_t_gap_L_ms, s_hc_deg_thresh, s_thres_up, s_thres_down)
+STRUCT_FMT = '<IBBB20f6iBBf16f'
+PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)  # was 153
 
 EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 159
 ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
@@ -99,8 +101,10 @@ CSV_HEADER = (
     "is_moving,hc_count,R_count_upeak,L_count_upeak,R_count_dpeak,L_count_dpeak,"
     "tau_max_setting,s_gait_mode,s_g_knn_conf,"
     "T_swing_ms,T_swing_SOS_ms,T_swing_STS_ms,"
+    "T_swing_SOS_ms_conf1,T_swing_STS_ms_conf1,"
     "s_vel_HC,s_T_HC_s,"
-    "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y"
+    "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y,"
+    "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down"
 )
 CSV_COLS = CSV_HEADER.split(",")
 
@@ -115,7 +119,8 @@ def make_missing_row(loop_cnt: int, last_row=None):
     row = [float("nan")] * len(CSV_COLS)
     row[0] = int(loop_cnt)
 
-    int_indices = {0, 1, 2, 3, 25, 26, 27, 28, 29, 30, 31, 32}
+    # Integer-like columns: LoopCnt + 3 uint8 header + 6 int32 + 2 uint8 tail-head.
+    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31}
     if last_row is None:
         for idx in int_indices:
             if idx == 0:
@@ -233,16 +238,16 @@ def decode_packet(data_tuple):
     #   [24..29] 6 int32
     #   [30..31] 2 uint8 (tau_max_setting, s_gait_mode)
     #   [32]     float (s_g_knn_conf)
-    #   [33..41] 9 floats tail
+    #   [33..48] 16 floats tail
     
-    # 총 42개 요소
-    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 9 
+    # 총 49개 요소
+    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 16
     if len(data_tuple) != expected_elems:
         raise ValueError(
             f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})"
         )
 
-    row = [0] * len(CSV_COLS) # len(CSV_COLS)는 42여야 함
+    row = [0] * len(CSV_COLS)  # keep in sync with CSV_HEADER
 
     # 0) loopCnt + 3 uint8 (인덱스 0~3)
     row[0] = int(data_tuple[0])
@@ -271,10 +276,9 @@ def decode_packet(data_tuple):
     base = 4 + 20 + 6 + 2
     row[32] = float(data_tuple[base])
 
-    # 5) tail 9 floats (인덱스 33~41)
-    # [수정] 기존 34+i -> 33+i로 변경 (최대 인덱스 41이 됨)
+    # 5) tail 16 floats (인덱스 33~48)
     base = 4 + 20 + 6 + 2 + 1
-    for i in range(9):
+    for i in range(16):
         row[33 + i] = float(data_tuple[base + i])
 
     return row
@@ -288,7 +292,7 @@ def decode_payload_to_row(payload: bytes, last_good_row=None):
 def row_to_csv_line(row):
     """row(list) → CSV string (정수/float 혼합)."""
     # int fields: loopCnt, h10Mode/AssistLevel/SmartAssist, is_moving/hc_count/upeak/dpeak, tau_max_setting, s_gait_mode
-    int_indices = {0, 1, 2, 3, 25, 26, 27, 28, 29, 30, 31, 32}
+    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31}
     parts = []
     for idx, val in enumerate(row):
         if idx in int_indices:
@@ -1294,8 +1298,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # 4번 플롯은 scatter 전용 설정 (유지)
         self.plot_widgets[3].setLabel("bottom", "s_norm_vel_HC")
         self.plot_widgets[3].setLabel("left", "s_norm_T_HC")
-        self.plot_widgets[3].setXRange(0.0, 1.5, padding=0.0)
-        self.plot_widgets[3].setYRange(0.0, 1.5, padding=0.0)
+        self.plot_widgets[3].setXRange(0.0, 2.0, padding=0.0)
+        self.plot_widgets[3].setYRange(0.0, 2.0, padding=0.0)
 
         # Plot 4: scatter item을 1회만 만들고 setData로 갱신
         self._hc_scatter_item = pg.ScatterPlotItem()
