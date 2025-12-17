@@ -71,6 +71,7 @@ typedef struct __attribute__((packed)) {
     // Most recent swing times whose KNN confidence was exactly 1.0 (used for normalization).
     float T_swing_SOS_ms_conf1;
     float T_swing_STS_ms_conf1;
+    float TswingRecording_ms;
     float s_vel_HC;
     float s_T_HC_s;
     float s_norm_vel_HC;
@@ -143,6 +144,7 @@ extern volatile float T_swing_SOS_ms;
 extern volatile float T_swing_STS_ms;
 extern volatile float T_swing_SOS_ms_conf1;
 extern volatile float T_swing_STS_ms_conf1;
+extern volatile float TswingRecording_ms;
 extern volatile float s_vel_HC_dbg;
 extern volatile float s_T_HC_s_dbg;
 extern volatile float s_dbg_norm_vel_HC;

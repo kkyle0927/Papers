@@ -62,6 +62,7 @@ void FillAndSendSavingData(void)
     SavingData.T_swing_STS_ms = (float)T_swing_STS_ms;
     SavingData.T_swing_SOS_ms_conf1 = (float)T_swing_SOS_ms_conf1;
     SavingData.T_swing_STS_ms_conf1 = (float)T_swing_STS_ms_conf1;
+    SavingData.TswingRecording_ms   = (float)TswingRecording_ms;
     SavingData.s_vel_HC       = (float)s_vel_HC_dbg;
     SavingData.s_T_HC_s       = (float)s_T_HC_s_dbg;
     SavingData.s_norm_vel_HC  = (float)s_dbg_norm_vel_HC;

@@ -136,6 +136,8 @@ SmartAssist_t    SmartAssist = SmartAssist_OFF;
 
 bool xsensIMUenableRes = false;
 
+static RecordingState_t s_prevRecordingState = Record_OFF;
+
 // ---- USER_DEFINED_CTRL (ported) state ----
 static float assist_level = 1.5f;
 
@@ -175,9 +177,9 @@ volatile int L_count_dpeak = 0;
 volatile int hc_count = 0;
 
 // Timing parameters are in absolute time (ms), not ticks.
-// Adaptive per-leg gate time (ms). Initialized to 400 ms.
-static float s_t_gap_R_ms = 400.0f;
-static float s_t_gap_L_ms = 400.0f;
+// Adaptive per-leg gate time (ms). Initialized to 300 ms.
+static float s_t_gap_R_ms = 300.0f;
+static float s_t_gap_L_ms = 300.0f;
 // Upper-peak angle threshold (deg). Adaptive from last STS-classified HC:
 // threshold = 0.8 * (swing-leg angle at that HC). Initial value requested: 10 deg.
 static float s_thres_up = 10.0f;
@@ -193,7 +195,7 @@ static float s_L_time_afterup_ms = 0.0f;
 static float s_HC_time_after_R_ms = 0.0f;
 static float s_HC_time_after_L_ms = 0.0f;
 // Normalization swing period (ms): uses mean of latest SOS/STS swing times.
-static float s_swing_period_ms = 400.0f;
+static float s_swing_period_ms = 300.0f;
 
 // Adaptive HC gate based on swing-leg thigh angle magnitude (deg).
 // Updated when an HC is classified as STS: threshold = 0.6 * (swing-leg angle at that HC).
@@ -201,26 +203,27 @@ static float s_swing_period_ms = 400.0f;
 static float s_hc_deg_thresh = 10.0f;
 
 // Track swing time separately by classification category (no left/right split).
-static float s_T_swing_SOS_ms = 400.0f;
-static float s_T_swing_STS_ms = 400.0f;
+static float s_T_swing_SOS_ms = 300.0f;
+static float s_T_swing_STS_ms = 300.0f;
 // For normalization, keep the most-recent swing times whose KNN confidence is exactly 1.0.
-// Initialized to 400 ms for both classes, as requested.
-static float s_T_swing_SOS_ms_conf1 = 400.0f;
-static float s_T_swing_STS_ms_conf1 = 400.0f;
+// Initialized to 300 ms for both classes, as requested.
+static float s_T_swing_SOS_ms_conf1 = 300.0f;
+static float s_T_swing_STS_ms_conf1 = 300.0f;
 static bool  s_T_swing_SOS_has_conf1 = false;
 static bool  s_T_swing_STS_has_conf1 = false;
 static bool s_last_HC_class_is_valid = false;
 static bool s_last_HC_is_STS = false;
 
 // Debug-visible normalization swing period (ms). Mirrors s_swing_period_ms for Live Expressions.
-volatile float T_swing_ms = 400.0f;
+volatile float T_swing_ms = 300.0f;
 
 // Debug-visible latest swing times by class (ms).
-volatile float T_swing_SOS_ms = 400.0f;
-volatile float T_swing_STS_ms = 400.0f;
+volatile float T_swing_SOS_ms = 300.0f;
+volatile float T_swing_STS_ms = 300.0f;
 // Debug-visible most recent conf==1 swing times.
-volatile float T_swing_SOS_ms_conf1 = 400.0f;
-volatile float T_swing_STS_ms_conf1 = 400.0f;
+volatile float T_swing_SOS_ms_conf1 = 300.0f;
+volatile float T_swing_STS_ms_conf1 = 300.0f;
+volatile float TswingRecording_ms = 0.0f;
 
 static float s_vel_HC = 0.0f;
 static float s_R_swing_time_ms = 0.0f;
@@ -243,8 +246,8 @@ volatile float s_dbg_scaling_X = 105.6426f;
 volatile float s_dbg_scaling_Y = 835.8209f;
 
 // CDC/Live-expression mirrors for adaptive parameters
-volatile float s_dbg_t_gap_R_ms = 400.0f;
-volatile float s_dbg_t_gap_L_ms = 400.0f;
+volatile float s_dbg_t_gap_R_ms = 300.0f;
+volatile float s_dbg_t_gap_L_ms = 300.0f;
 volatile float s_dbg_hc_deg_thresh = 10.0f;
 volatile float s_dbg_thres_up = 10.0f;
 volatile float s_dbg_thres_down = 10.0f;
@@ -333,6 +336,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 static void adaptive_assist(const GaitRecognitionResult_t* rec,
                             bool* out_trig_R, bool* out_trig_L,
                             float* out_tau_R, float* out_tau_L);
+static void ResetUserState(void);
 
 static void FVecDecoder_InitSingle(FVecSlot_t buf[]);
 static void FVecDecoder_Init(void);
@@ -385,6 +389,8 @@ void User_Setup(void)
     XM_SetPinMode(XM_EXT_DIO_3, XM_EXT_DIO_MODE_INPUT_PULLDOWN);
 
     FVecDecoder_Init();
+    ResetUserState();
+    s_prevRecordingState = Recording;
 }
 
 
@@ -436,7 +442,21 @@ static void Standby_Entry(void)
 
 static void Standby_Loop(void)
 {
+    static float s_tau_out_R = 0.0f;
+    static float s_tau_out_L = 0.0f;
+
 	UpdateRecordingState();
+    const bool recording_started = (s_prevRecordingState != Record_ON && Recording == Record_ON);
+    s_prevRecordingState = Recording;
+    if (recording_started) {
+        const RecordingState_t recording_saved = Recording;
+        ResetUserState();
+        Recording = recording_saved;
+        s_prevRecordingState = Recording;
+        s_tau_out_R = 0.0f;
+        s_tau_out_L = 0.0f;
+    }
+
     if (XM.status.h10.h10Mode == XM_H10_MODE_ASSIST) {
         XM_TSM_TransitionTo(s_userHandle, XM_STATE_ACTIVE);
     }
@@ -446,6 +466,17 @@ static void Standby_Loop(void)
     if (XM_button1 == XM_BTN_CLICK) {
         if (tau_max_setting >= 7) tau_max_setting = 0;
         else tau_max_setting += 1;
+    }
+
+    XM_button3 = XM_GetButtonEvent(XM_BTN_3);
+    const bool button3_reset = (XM_button3 == XM_BTN_CLICK);
+    if (button3_reset) {
+        const RecordingState_t recording_saved = Recording;
+        ResetUserState();
+        Recording = recording_saved;
+        s_prevRecordingState = Recording;
+        s_tau_out_R = 0.0f;
+        s_tau_out_L = 0.0f;
     }
 
     // In STANDBY: compute assist "orders" (triggers + f-vector decode), but do NOT actuate.
@@ -486,8 +517,6 @@ static void Standby_Loop(void)
     if (T_decay_s < dt_s) T_decay_s = dt_s;
     const float alpha = dt_s / (T_decay_s + dt_s);
 
-    static float s_tau_out_R = 0.0f;
-    static float s_tau_out_L = 0.0f;
     const float target_R = r_sts ? 0.0f : tau_R;
     const float target_L = l_sts ? 0.0f : tau_L;
     s_tau_out_R = s_tau_out_R + alpha * (target_R - s_tau_out_R);
@@ -505,7 +534,25 @@ static void Active_Entry(void)
 
 static void Active_Loop(void)
 {
+	static float s_tau_out_R = 0.0f;
+	static float s_tau_out_L = 0.0f;
+
 	UpdateRecordingState();
+	const bool recording_started = (s_prevRecordingState != Record_ON && Recording == Record_ON);
+	s_prevRecordingState = Recording;
+	if (recording_started) {
+	    const RecordingState_t recording_saved = Recording;
+	    ResetUserState();
+	    Recording = recording_saved;
+	    s_prevRecordingState = Recording;
+	    s_tau_out_R = 0.0f;
+	    s_tau_out_L = 0.0f;
+	    XM_SetAssistTorqueRH(0.0f);
+	    XM_SetAssistTorqueLH(0.0f);
+	    s_tau_cmd_R = 0.0f;
+	    s_tau_cmd_L = 0.0f;
+	    return;
+	}
 
     // Update tau_max on each button-1 click
     XM_button1 = XM_GetButtonEvent(XM_BTN_1);
@@ -554,8 +601,6 @@ static void Active_Loop(void)
     if (T_decay_s < dt_s) T_decay_s = dt_s;
     const float alpha = dt_s / (T_decay_s + dt_s);
 
-    static float s_tau_out_R = 0.0f;
-    static float s_tau_out_L = 0.0f;
     const float target_R = r_sts ? 0.0f : tau_R;
     const float target_L = l_sts ? 0.0f : tau_L;
     s_tau_out_R = s_tau_out_R + alpha * (target_R - s_tau_out_R);
@@ -689,7 +734,7 @@ static int knn_2label_majority_ud(const float (*xy)[2], int n, int split,
 static int update_standing_moving_flag_w_ud(float wR_metric, float wL_metric)
 {
     const float V_ON_THRESH   = 40.0f;
-    const float V_OFF_THRESH  = 15.0f;
+    const float V_OFF_THRESH  = 10.0f;
     const int   ON_HOLD_TICKS = 10;
     const int   OFF_HOLD_TICKS= 50;
 
@@ -928,11 +973,12 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
                 }
             }
         }
+        TswingRecording_ms = measured_swing_ms;
 
         // Normalization uses mean of the most recent SOS/STS swing times whose conf==1.
-        // Before both are observed (early after gait start), use initial 400/400.
-        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 400.0f;
-        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 400.0f;
+        // Before both are observed (early after gait start), use initial 300/300.
+        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 300.0f;
+        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 300.0f;
         if (s_T_swing_SOS_has_conf1 && s_T_swing_STS_has_conf1) {
             s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
         } else {
@@ -995,11 +1041,12 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
                 }
             }
         }
+        TswingRecording_ms = measured_swing_ms;
 
         // Normalization uses mean of the most recent SOS/STS swing times whose conf==1.
-        // Before both are observed (early after gait start), use initial 400/400.
-        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 400.0f;
-        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 400.0f;
+        // Before both are observed (early after gait start), use initial 300/300.
+        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 300.0f;
+        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 300.0f;
         if (s_T_swing_SOS_has_conf1 && s_T_swing_STS_has_conf1) {
             s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
         } else {
@@ -1020,7 +1067,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     if (s_Rdeg[2] > s_R_lowpeak_val + 10.0f) {
         s_R_lowpeak_val = s_thres_down;
     }
-    if ((s_Rdeg[2]-s_Rdeg[1])*(s_Rdeg[1]-s_Rdeg[0]) < s_var &&
+    if ((s_Rdeg[2]-s_Rdeg[1])*(s_Rdeg[1]-s_Rdeg[0]) <= s_var &&
         (s_Rdeg[2] - s_Rdeg[1]) >= 0.0f &&
         s_Rdeg[2] <= s_R_lowpeak_val + 3.0f) {
         R_count_dpeak++;
@@ -1035,7 +1082,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     if (s_Ldeg[2] > s_L_lowpeak_val + 10.0f) {
         s_L_lowpeak_val = s_thres_down;
     }
-    if ((s_Ldeg[2]-s_Ldeg[1])*(s_Ldeg[1]-s_Ldeg[0]) < s_var &&
+    if ((s_Ldeg[2]-s_Ldeg[1])*(s_Ldeg[1]-s_Ldeg[0]) <= s_var &&
         (s_Ldeg[2] - s_Ldeg[1]) >= 0.0f &&
         s_Ldeg[2] <= s_L_lowpeak_val + 3.0f) {
         L_count_dpeak++;
@@ -1127,6 +1174,115 @@ static void adaptive_assist(const GaitRecognitionResult_t* rec,
  * - 상세 구현은 파일 끝으로 이동
  *------------------------------------------------------------
  */
+
+static void ResetUserState(void)
+{
+    Rflag_assist = false;
+    Lflag_assist = false;
+    Rstop_assist = false;
+    Lstop_assist = false;
+
+    s_loop_count = 0;
+    memset(s_Rdeg, 0, sizeof(s_Rdeg));
+    memset(s_Ldeg, 0, sizeof(s_Ldeg));
+
+    Recording = Record_OFF;
+    SmartAssist = SmartAssist_OFF;
+    sync_signal = XM_LOW;
+    sync_signal_pre = XM_LOW;
+
+    s_y_prev_R = 0.0f;
+    s_y_prev_L = 0.0f;
+    s_w_prev_R = 0.0f;
+    s_w_prev_L = 0.0f;
+
+    s_R_time_upcond = false;
+    s_L_time_upcond = false;
+    s_HC_time_upcond_R = false;
+    s_HC_time_upcond_L = false;
+    s_HC_Rswing4upcond = false;
+    s_HC_Lswing4upcond = false;
+
+    R_count_upeak = 0;
+    R_count_dpeak = 0;
+    L_count_upeak = 0;
+    L_count_dpeak = 0;
+    hc_count = 0;
+
+    s_t_gap_R_ms = 300.0f;
+    s_t_gap_L_ms = 300.0f;
+    s_dbg_t_gap_R_ms = s_t_gap_R_ms;
+    s_dbg_t_gap_L_ms = s_t_gap_L_ms;
+
+    s_thres_up = 10.0f;
+    s_thres_down = 10.0f;
+    s_R_lowpeak_val = 10.0f;
+    s_L_lowpeak_val = 10.0f;
+    s_dbg_thres_up = s_thres_up;
+    s_dbg_thres_down = s_thres_down;
+
+    s_var = 0.0f;
+
+    s_R_time_afterup_ms = 0.0f;
+    s_L_time_afterup_ms = 0.0f;
+    s_HC_time_after_R_ms = 0.0f;
+    s_HC_time_after_L_ms = 0.0f;
+
+    s_swing_period_ms = 300.0f;
+    s_T_swing_SOS_ms = 300.0f;
+    s_T_swing_STS_ms = 300.0f;
+    s_T_swing_SOS_ms_conf1 = 300.0f;
+    s_T_swing_STS_ms_conf1 = 300.0f;
+    s_T_swing_SOS_has_conf1 = false;
+    s_T_swing_STS_has_conf1 = false;
+    s_last_HC_class_is_valid = false;
+    s_last_HC_is_STS = false;
+
+    T_swing_ms = s_swing_period_ms;
+    T_swing_SOS_ms = s_T_swing_SOS_ms;
+    T_swing_STS_ms = s_T_swing_STS_ms;
+    T_swing_SOS_ms_conf1 = s_T_swing_SOS_ms_conf1;
+    T_swing_STS_ms_conf1 = s_T_swing_STS_ms_conf1;
+
+    s_hc_deg_thresh = 10.0f;
+    s_dbg_hc_deg_thresh = s_hc_deg_thresh;
+
+    s_vel_HC = 0.0f;
+    s_R_swing_time_ms = 0.0f;
+    s_L_swing_time_ms = 0.0f;
+    s_T_HC_ms = 0.0f;
+    s_norm_vel_HC = 0.0f;
+    s_norm_T_HC = 0.0f;
+    s_vel_HC_dbg = 0.0f;
+    s_T_HC_s_dbg = 0.0f;
+
+    s_dbg_norm_vel_HC = 0.0f;
+    s_dbg_norm_T_HC = 0.0f;
+    s_dbg_scaling_X = s_scaling_X;
+    s_dbg_scaling_Y = s_scaling_Y;
+
+    TswingRecording_ms = 0.0f;
+
+    s_tau_cmd_R = 0.0f;
+    s_tau_cmd_L = 0.0f;
+
+    s_gait_mode = NONE;
+    s_g_knn_conf = 0.0f;
+    s_gait_mode_latch_leg = GAIT_LATCH_NONE;
+    trig_R = false;
+    trig_L = false;
+    s_is_moving = 0;
+    s_dbg_wR_f = 0.0f;
+    s_dbg_wL_f = 0.0f;
+
+    memset((void*)&s_gait_feat, 0, sizeof(s_gait_feat));
+    memset((void*)&s_gait_rec, 0, sizeof(s_gait_rec));
+
+    s_dataSaveLoopCnt = 0;
+    memset(&SavingData, 0, sizeof(SavingData));
+
+    FVecDecoder_Init();
+}
 
 static void FVecDecoder_InitSingle(FVecSlot_t buf[])
 {

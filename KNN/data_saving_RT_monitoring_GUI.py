@@ -60,6 +60,9 @@ FLUSH_EVERY = 500               # CSV 라인 500개 모을 때마다 디스크�
 # float T_swing_ms;
 # float T_swing_SOS_ms;
 # float T_swing_STS_ms;
+# float T_swing_SOS_ms_conf1;
+# float T_swing_STS_ms_conf1;
+# float TswingRecording_ms;
 # float s_vel_HC;
 # float s_T_HC_s;
 # float s_norm_vel_HC;
@@ -80,14 +83,14 @@ SOF_BYTES_LE = b"\x55\xAA"  # uint16 0xAA55 in little-endian stream
 #   int32  6개   (is_moving, hc_count, R/L upeak, R/L dpeak)
 #   uint8  2개   (tau_max_setting, s_gait_mode)
 #   float  1개   (s_g_knn_conf)
-#   float  16c  (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms,
-#                T_swing_SOS_ms_conf1, T_swing_STS_ms_conf1,
+#   float  17개  (T_swing_ms, T_swing_SOS_ms, T_swing_STS_ms,
+#                T_swing_SOS_ms_conf1, T_swing_STS_ms_conf1, TswingRecording_ms,
 #                s_vel_HC, s_T_HC_s, s_norm_vel_HC, s_norm_T_HC, s_scaling_X, s_scaling_Y,
 #                s_t_gap_R_ms, s_t_gap_L_ms, s_hc_deg_thresh, s_thres_up, s_thres_down)
-STRUCT_FMT = '<IBBB20f6iBBf16f'
-PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)  # was 153
+STRUCT_FMT = '<IBBB20f6iBBf17f'
+PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
-EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 159
+EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 191
 ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
 
 CSV_HEADER = (
@@ -101,7 +104,7 @@ CSV_HEADER = (
     "is_moving,hc_count,R_count_upeak,L_count_upeak,R_count_dpeak,L_count_dpeak,"
     "tau_max_setting,s_gait_mode,s_g_knn_conf,"
     "T_swing_ms,T_swing_SOS_ms,T_swing_STS_ms,"
-    "T_swing_SOS_ms_conf1,T_swing_STS_ms_conf1,"
+    "T_swing_SOS_ms_conf1,T_swing_STS_ms_conf1,TswingRecording_ms,"
     "s_vel_HC,s_T_HC_s,"
     "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y,"
     "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down"
@@ -238,10 +241,10 @@ def decode_packet(data_tuple):
     #   [24..29] 6 int32
     #   [30..31] 2 uint8 (tau_max_setting, s_gait_mode)
     #   [32]     float (s_g_knn_conf)
-    #   [33..48] 16 floats tail
+    #   [33..49] 17 floats tail
     
     # 총 49개 요소
-    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 16
+    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 17
     if len(data_tuple) != expected_elems:
         raise ValueError(
             f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})"
@@ -278,7 +281,7 @@ def decode_packet(data_tuple):
 
     # 5) tail 16 floats (인덱스 33~48)
     base = 4 + 20 + 6 + 2 + 1
-    for i in range(16):
+    for i in range(17):
         row[33 + i] = float(data_tuple[base + i])
 
     return row
@@ -834,12 +837,12 @@ class CsvReviewDialog(QtWidgets.QDialog):
             ["s_g_knn_conf","s_scaling_X","s_scaling_Y"],  # 5
 
             # 6: 타이밍 관련
-            ["T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms","s_vel_HC","s_T_HC_s"],  # 6
+            ["TswingRecording_ms","T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms","s_vel_HC","s_T_HC_s"],  # 6
 
             ["is_moving","hc_count","R_count_upeak","L_count_upeak","R_count_dpeak","L_count_dpeak"],  # 7
 
             ["tau_max_setting","s_gait_mode","s_g_knn_conf",
-            "T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms",
+            "TswingRecording_ms","T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms",
             "s_vel_HC","s_T_HC_s","s_norm_vel_HC","s_norm_T_HC","s_scaling_X","s_scaling_Y"],  # 8
         ]
 
@@ -1174,8 +1177,8 @@ class MainWindow(QtWidgets.QMainWindow):
         g1 = ["LeftThighAngle", "RightThighAngle"]
         # 2) 좌/우 hip torque
         g2 = ["LeftHipTorque", "RightHipTorque"]
-        # 3) T_swing: mean + SOS/STS buckets
-        g3 = ["T_swing_ms", "T_swing_SOS_ms", "T_swing_STS_ms"]
+        # 3) TswingRecording telemetry
+        g3 = ["TswingRecording_ms"]
         # 4) scatter: (s_norm_vel_HC, s_norm_T_HC) at hc_count increments
         g4 = []
         self.plot_groups = [g1, g2, g3, g4]
@@ -1292,7 +1295,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Plot2: hip torque -> -20 ~ 20 (유지)
         self.plot_widgets[1].setYRange(-10.0, 10.0, padding=0.0)
 
-        # Plot3: T_swing_ms etc -> 기존 0~700에서 0~1000으로 변경
+        # Plot3: TswingRecording_ms -> 기존 0~700에서 0~1000으로 변경
         self.plot_widgets[2].setYRange(0.0, 1000.0, padding=0.0)
 
         # 4번 플롯은 scatter 전용 설정 (유지)
