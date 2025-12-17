@@ -190,6 +190,17 @@ static float s_R_lowpeak_val = 10.0f;
 static float s_L_lowpeak_val = 10.0f;
 static float s_var = 0.0f;
 
+static float s_R_stance_angle_gate = 20.0f;
+static float s_L_stance_angle_gate = 20.0f;
+static float s_R_prev_stance_angle_at_dpeak = 0.0f;
+static float s_L_prev_stance_angle_at_dpeak = 0.0f;
+static bool  s_R_stance_angle_sampled = false;
+static bool  s_L_stance_angle_sampled = false;
+volatile float s_dbg_R_stance_angle_gate = 20.0f;
+volatile float s_dbg_L_stance_angle_gate = 20.0f;
+volatile float s_dbg_R_stance_angle_sample = 0.0f;
+volatile float s_dbg_L_stance_angle_sample = 0.0f;
+
 static float s_R_time_afterup_ms = 0.0f;
 static float s_L_time_afterup_ms = 0.0f;
 static float s_HC_time_after_R_ms = 0.0f;
@@ -842,7 +853,23 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         const float swing_deg = is_right_swing ? s_Rdeg[2] : s_Ldeg[2];
         const bool swing_deg_ok = (swing_deg >= s_hc_deg_thresh);
 
-        if (!hc_time_ok || !swing_deg_ok) {
+        float stance_angle_sample = 0.0f;
+        bool stance_angle_ok = true;
+        if (is_right_swing) {
+            stance_angle_sample = s_R_prev_stance_angle_at_dpeak;
+            stance_angle_ok = (!s_R_stance_angle_sampled) || (stance_angle_sample >= s_R_stance_angle_gate);
+        } else {
+            stance_angle_sample = s_L_prev_stance_angle_at_dpeak;
+            stance_angle_ok = (!s_L_stance_angle_sampled) || (stance_angle_sample >= s_L_stance_angle_gate);
+        }
+
+        if (is_right_swing) {
+            s_dbg_R_stance_angle_sample = stance_angle_sample;
+        } else {
+            s_dbg_L_stance_angle_sample = stance_angle_sample;
+        }
+
+        if (!hc_time_ok || !swing_deg_ok || !stance_angle_ok) {
             // Not enough time elapsed (per swing side) or swing angle too small; ignore this HC candidate.
         } else {
             if (is_right_swing) {
@@ -988,6 +1015,14 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         s_R_time_afterup_ms = 0.0f;
         s_HC_Rswing4upcond = false;
 
+        if (s_last_HC_class_is_valid && !s_last_HC_is_STS) {
+            const float raw_peak = fabsf(s_Rdeg[2]);
+            const float target_thresh = clampf_ud(0.4f * raw_peak, 5.0f, 120.0f);
+            const float ALPHA = 0.2f;
+            s_R_stance_angle_gate = (1.0f - ALPHA) * s_R_stance_angle_gate + ALPHA * target_thresh;
+            s_dbg_R_stance_angle_gate = s_R_stance_angle_gate;
+        }
+
         // Clear latched gait mode after the swing leg's next upper peak.
         if (s_gait_mode_latch_leg == GAIT_LATCH_R) {
             s_gait_mode_latch_leg = GAIT_LATCH_NONE;
@@ -1056,6 +1091,14 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         s_L_time_afterup_ms = 0.0f;
         s_HC_Lswing4upcond = false;
 
+        if (s_last_HC_class_is_valid && !s_last_HC_is_STS) {
+            const float raw_peak = fabsf(s_Ldeg[2]);
+            const float target_thresh = clampf_ud(0.4f * raw_peak, 5.0f, 120.0f);
+            const float ALPHA = 0.2f;
+            s_L_stance_angle_gate = (1.0f - ALPHA) * s_L_stance_angle_gate + ALPHA * target_thresh;
+            s_dbg_L_stance_angle_gate = s_L_stance_angle_gate;
+        }
+
         // Clear latched gait mode after the swing leg's next upper peak.
         if (s_gait_mode_latch_leg == GAIT_LATCH_L) {
             s_gait_mode_latch_leg = GAIT_LATCH_NONE;
@@ -1069,9 +1112,12 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     }
     if ((s_Rdeg[2]-s_Rdeg[1])*(s_Rdeg[1]-s_Rdeg[0]) <= s_var &&
         (s_Rdeg[2] - s_Rdeg[1]) >= 0.0f &&
-        s_Rdeg[2] <= s_R_lowpeak_val + 3.0f) {
+        s_Rdeg[2] <= s_R_lowpeak_val + 0.5f) {
         R_count_dpeak++;
         s_R_lowpeak_val = s_Rdeg[2];
+        s_R_prev_stance_angle_at_dpeak = s_Ldeg[2];
+        s_R_stance_angle_sampled = true;
+        s_dbg_R_stance_angle_sample = s_R_prev_stance_angle_at_dpeak;
         s_R_swing_time_ms = 0.0f;
         if (is_moving) {
             Rstop_assist = false;
@@ -1084,9 +1130,12 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     }
     if ((s_Ldeg[2]-s_Ldeg[1])*(s_Ldeg[1]-s_Ldeg[0]) <= s_var &&
         (s_Ldeg[2] - s_Ldeg[1]) >= 0.0f &&
-        s_Ldeg[2] <= s_L_lowpeak_val + 3.0f) {
+        s_Ldeg[2] <= s_L_lowpeak_val + 0.5f) {
         L_count_dpeak++;
         s_L_lowpeak_val = s_Ldeg[2];
+        s_L_prev_stance_angle_at_dpeak = s_Rdeg[2];
+        s_L_stance_angle_sampled = true;
+        s_dbg_L_stance_angle_sample = s_L_prev_stance_angle_at_dpeak;
         s_L_swing_time_ms = 0.0f;
         if (is_moving) {
             Lstop_assist = false;
@@ -1220,6 +1269,17 @@ static void ResetUserState(void)
     s_L_lowpeak_val = 10.0f;
     s_dbg_thres_up = s_thres_up;
     s_dbg_thres_down = s_thres_down;
+
+    s_R_stance_angle_gate = 20.0f;
+    s_L_stance_angle_gate = 20.0f;
+    s_R_prev_stance_angle_at_dpeak = 0.0f;
+    s_L_prev_stance_angle_at_dpeak = 0.0f;
+    s_R_stance_angle_sampled = false;
+    s_L_stance_angle_sampled = false;
+    s_dbg_R_stance_angle_gate = s_R_stance_angle_gate;
+    s_dbg_L_stance_angle_gate = s_L_stance_angle_gate;
+    s_dbg_R_stance_angle_sample = 0.0f;
+    s_dbg_L_stance_angle_sample = 0.0f;
 
     s_var = 0.0f;
 

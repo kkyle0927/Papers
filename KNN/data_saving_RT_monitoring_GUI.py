@@ -4,6 +4,7 @@ import glob
 import csv
 import struct
 import time
+import re
 import serial
 import serial.tools.list_ports
 from datetime import datetime
@@ -1119,6 +1120,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # 실시간 plot item 캐시 (setData로 갱신해서 CPU 절약)
         self._ts_items = []  # list[dict[name -> PlotDataItem]] for plot 1~3
 
+        # 연결 상태 추적 (None, "logging", "monitor")
+        self._connection_mode = None
+
         # 기본 표시 변수(LeftHipAngle)
         self.default_idx = CSV_COLS.index("LeftHipAngle")
 
@@ -1150,6 +1154,80 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_timer = QtCore.QTimer(self)
         self.plot_timer.timeout.connect(self.update_all_plots)
         self.plot_timer.start(UPDATE_INTERVAL_MS)
+
+        self._reset_runtime_buffers()
+        self._update_toggle_buttons()
+
+    def _update_toggle_buttons(self):
+        logging_active = self._connection_mode == "logging"
+        monitor_active = self._connection_mode == "monitor"
+
+        if logging_active:
+            self.btn_connect.setText("Disconnect & Stop")
+            self.btn_connect.setEnabled(True)
+        else:
+            self.btn_connect.setText("Connect & Start Logging")
+            self.btn_connect.setEnabled(not monitor_active)
+
+        if monitor_active:
+            self.btn_monitor_only.setText("Disconnect & Stop")
+            self.btn_monitor_only.setEnabled(True)
+        else:
+            self.btn_monitor_only.setText("Connect & Monitor Only")
+            self.btn_monitor_only.setEnabled(not logging_active)
+
+    def _reset_runtime_buffers(self):
+        """Clear cached data and reset plot visuals after a session ends."""
+        self.data_all = []
+        self._recv_count = 0
+        self._last_hc_count = None
+        self._hc_points_x = []
+        self._hc_points_y = []
+        self._hc_points_brush = []
+
+        for items in getattr(self, "_ts_items", []):
+            for item in items.values():
+                item.setData([], [])
+
+        if self._hc_scatter_item is not None:
+            self._hc_scatter_item.setData([])
+
+        # Reset indicators
+        self.mode_label.setText("H10Mode: -")
+        self.error_label.setText("Packet errors: 0")
+        if getattr(self, "sanity_error_label", None) is not None:
+            self.sanity_error_label.setText("Sanity errors: 0")
+        if self.is_moving_indicator is not None:
+            self._set_is_moving_indicator(0)
+        for key, lbl in self.state_labels.items():
+            lbl.setText(f"{key}: -")
+        self.status_bar.showMessage("Ready")
+
+    def _ensure_csv_extension(self, filename: str) -> str:
+        name = (filename or "").strip()
+        if not name:
+            return ""
+        base, ext = os.path.splitext(name)
+        if ext.lower() != ".csv":
+            name = base if ext else name
+            return f"{name}.csv"
+        return base + ".csv"
+
+    def _increment_filename_suffix(self):
+        current = (self.edit_filename.text() or "").strip()
+        if not current:
+            return
+        name = self._ensure_csv_extension(current)
+        base, ext = os.path.splitext(name)
+        match = re.search(r"^(.*?)(\d+)$", base)
+        if not match:
+            self.edit_filename.setText(name)
+            return
+        prefix, digits = match.groups()
+        width = len(digits)
+        next_number = str(int(digits) + 1).zfill(width)
+        new_name = f"{prefix}{next_number}{ext}"
+        self.edit_filename.setText(new_name)
 
     def _set_is_moving_indicator(self, is_moving: int):
         if self.is_moving_indicator is None:
@@ -1235,7 +1313,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
         top.addWidget(QtWidgets.QLabel("Output file:"))
-        default_name = f"cdc_monitoring_data_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        default_name = "251218_cyk_SOS_80bpm_trial1"
         self.edit_filename = QtWidgets.QLineEdit(default_name)
         self.edit_filename.setMinimumWidth(320)
         top.addWidget(self.edit_filename)
@@ -1309,10 +1387,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_widgets[3].setLabel("left", "s_norm_T_HC")
         self.plot_widgets[3].setXRange(0.0, 2.0, padding=0.0)
         self.plot_widgets[3].setYRange(0.0, 2.0, padding=0.0)
+        self.plot_widgets[3].setLimits(xMin=0.0, xMax=2.0, yMin=0.0, yMax=2.0)
+        self.plot_widgets[3].setAspectLocked(True, ratio=1.0)
 
         # Plot 4: scatter item을 1회만 만들고 setData로 갱신
         self._hc_scatter_item = pg.ScatterPlotItem()
         self.plot_widgets[3].addItem(self._hc_scatter_item)
+        self._scatter_legend = self.plot_widgets[3].addLegend()
+        self._scatter_legend_items = []
+        for label, color in (("STS", "#dc2626"), ("SOS", "#2563eb")):
+            dummy_item = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(color), pen=pg.mkPen(color))
+            self._scatter_legend.addItem(dummy_item, label)
+            self._scatter_legend_items.append(dummy_item)
 
         # ---- 우측: 상태 패널 ----
         state_box = QtWidgets.QGroupBox("States")
@@ -1383,16 +1469,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_bar.showMessage("Port list refreshed")
 
     def _open_log_file(self):
-        filename = (self.edit_filename.text() or "").strip()
-        if not filename:
-            filename = f"cdc_monitoring_data_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            self.edit_filename.setText(filename)
+        filename_input = (self.edit_filename.text() or "").strip()
+        if not filename_input:
+            filename_input = "251218_cyk_SOS_80bpm_trial1"
 
-        folder = (self.edit_folder.text() or "").strip()
-        if folder:
-            full_path = os.path.join(folder, filename)
+        normalized_name = self._ensure_csv_extension(filename_input)
+        name_only = os.path.basename(normalized_name)
+        implied_folder = os.path.dirname(normalized_name)
+
+        folder_field = (self.edit_folder.text() or "").strip()
+        if implied_folder:
+            folder = implied_folder
+            self.edit_folder.setText(folder)
         else:
-            full_path = filename
+            folder = folder_field
+
+        self.edit_filename.setText(name_only)
+
+        if folder:
+            full_path = os.path.join(folder, name_only)
+        else:
+            full_path = name_only
 
         # 절대 경로로 정규화
         full_path = os.path.abspath(full_path)
@@ -1484,13 +1581,17 @@ class MainWindow(QtWidgets.QMainWindow):
             "CSV Files (*.csv);;All Files (*)"
         )
         if fname:
-            folder = os.path.dirname(fname)
-            name_only = os.path.basename(fname)
+            normalized = self._ensure_csv_extension(fname)
+            folder = os.path.dirname(normalized)
+            name_only = os.path.basename(normalized)
             self.edit_folder.setText(folder)
             self.edit_filename.setText(name_only)
 
 
     def on_connect_clicked(self):
+        if self._connection_mode == "logging":
+            self.on_disconnect_clicked()
+            return
         port_name = self.combo_port.currentText()
         if not port_name or port_name == "(no ports)":
             QtWidgets.QMessageBox.warning(self, "Warning", "No serial port selected.")
@@ -1520,8 +1621,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.serial_thread.start()
 
-        self.btn_connect.setEnabled(False)
-        self.btn_monitor_only.setEnabled(False)
+        self._connection_mode = "logging"
+        self._update_toggle_buttons()
         self.btn_disconnect.setEnabled(True)
         self.status_bar.showMessage(f"Connecting to {port_name} ...")
         # 에러 카운터 초기화
@@ -1529,6 +1630,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sanity_error_label.setText("Sanity errors: 0")
 
     def on_monitor_only_clicked(self):
+        if self._connection_mode == "monitor":
+            self.on_disconnect_clicked()
+            return
         port_name = self.combo_port.currentText()
         if not port_name or port_name == "(no ports)":
             QtWidgets.QMessageBox.warning(self, "Warning", "No serial port selected.")
@@ -1558,8 +1662,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.serial_thread.start()
 
-        self.btn_connect.setEnabled(False)
-        self.btn_monitor_only.setEnabled(False)
+        self._connection_mode = "monitor"
+        self._update_toggle_buttons()
         self.btn_disconnect.setEnabled(True)
         self.status_bar.showMessage(f"Connecting to {port_name} (monitor only) ...")
         self.error_label.setText("Packet errors: 0")
@@ -1567,6 +1671,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_disconnect_clicked(self):
         if self.serial_worker is not None:
+            self.btn_connect.setEnabled(False)
+            self.btn_monitor_only.setEnabled(False)
+            self.btn_disconnect.setEnabled(False)
             self.serial_worker.stop()
 
     # ---------- 데이터/플롯 ----------
@@ -1761,6 +1868,10 @@ class MainWindow(QtWidgets.QMainWindow):
     @pyqtSlot(str)
     def on_connection_failed(self, msg):
         self._close_log_file()
+        self._connection_mode = None
+        self._update_toggle_buttons()
+        self.btn_disconnect.setEnabled(False)
+        self._reset_runtime_buffers()
         QtWidgets.QMessageBox.critical(self, "Serial Connection Failed", msg)
 
     @pyqtSlot()
@@ -1775,15 +1886,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # 파일 닫기 (내부에서 pending flush)
         self._close_log_file()
 
-        # 버튼 상태
-        self.btn_connect.setEnabled(True)
-        self.btn_monitor_only.setEnabled(True)
+        self._connection_mode = None
+        self._update_toggle_buttons()
         self.btn_disconnect.setEnabled(False)
         self.status_bar.showMessage("Disconnected")
 
         # 저장된 최신 CSV 열어 리뷰 뷰어 표시 (monitor-only면 파일 없음)
         if self._last_log_path:
             self._open_review_viewer()
+
+        self._increment_filename_suffix()
+        self._reset_runtime_buffers()
 
     @pyqtSlot(int)
     def on_packet_error_count(self, n):
