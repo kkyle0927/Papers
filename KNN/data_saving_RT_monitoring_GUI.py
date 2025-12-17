@@ -1351,8 +1351,8 @@ class MainWindow(QtWidgets.QMainWindow):
         moving_row.addStretch()
         state_layout.addLayout(moving_row)
 
-        # 요청된 state들(세로 나열): h10Mode, tau_max_setting, s_scaling_X, s_scaling_Y
-        for key in ("h10Mode", "tau_max_setting", "s_scaling_X", "s_scaling_Y"):
+        # 요청된 state들(세로 나열): h10Mode, tau_max_setting, s_scaling_X, s_scaling_Y, hc_count
+        for key in ("h10Mode", "tau_max_setting", "s_scaling_X", "s_scaling_Y", "hc_count"):
             lbl = QtWidgets.QLabel(f"{key}: -")
             lbl.setFont(font)
             state_layout.addWidget(lbl)
@@ -1612,6 +1612,13 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+        try:
+            if "hc_count" in self.state_labels:
+                idx = CSV_COLS.index("hc_count")
+                self.state_labels["hc_count"].setText(f"hc_count: {int(row[idx])}")
+        except Exception:
+            pass
+
         # is_moving 신호등 + HC scatter 포인트 추가
         try:
             is_moving_idx = CSV_COLS.index("is_moving")
@@ -1687,7 +1694,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     "pos": (x, y),
                     "brush": br,
                     "pen": pg.mkPen(color),
-                    "size": 8,
+                    "size": 12 if is_latest else 8,
                     "symbol": "star" if is_latest else "o",
                 })
             self._hc_scatter_item.setData(spots)

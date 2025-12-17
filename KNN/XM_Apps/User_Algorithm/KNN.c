@@ -161,7 +161,8 @@ static float s_w_prev_L = 0.0f;
 
 static bool s_R_time_upcond = false;
 static bool s_L_time_upcond = false;
-static bool s_HC_time_upcond = false;
+static bool s_HC_time_upcond_R = false;
+static bool s_HC_time_upcond_L = false;
 static bool s_HC_Rswing4upcond = false;
 static bool s_HC_Lswing4upcond = false;
 
@@ -189,7 +190,8 @@ static float s_var = 0.0f;
 
 static float s_R_time_afterup_ms = 0.0f;
 static float s_L_time_afterup_ms = 0.0f;
-static float s_HC_time_after_ms = 0.0f;
+static float s_HC_time_after_R_ms = 0.0f;
+static float s_HC_time_after_L_ms = 0.0f;
 // Normalization swing period (ms): uses mean of latest SOS/STS swing times.
 static float s_swing_period_ms = 400.0f;
 
@@ -772,7 +774,8 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     s_loop_count++;
     s_R_time_afterup_ms += CTRL_DT_MS;
     s_L_time_afterup_ms += CTRL_DT_MS;
-    s_HC_time_after_ms += CTRL_DT_MS;
+    s_HC_time_after_R_ms += CTRL_DT_MS;
+    s_HC_time_after_L_ms += CTRL_DT_MS;
     s_R_swing_time_ms += CTRL_DT_MS;
     s_L_swing_time_ms += CTRL_DT_MS;
 
@@ -781,23 +784,29 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
     if (s_R_time_afterup_ms >= s_t_gap_R_ms) s_R_time_upcond = true;
     if (s_L_time_afterup_ms >= s_t_gap_L_ms) s_L_time_upcond = true;
+    if (s_HC_time_after_R_ms >= s_t_gap_R_ms) s_HC_time_upcond_R = true;
+    if (s_HC_time_after_L_ms >= s_t_gap_L_ms) s_HC_time_upcond_L = true;
 
     if ((s_Rdeg[2] - s_Ldeg[2]) * (s_Rdeg[1] - s_Ldeg[1]) <= 0.0f) {
         // Determine swing side for this HC candidate (same rule as before).
         // Apply HC gate time depending on swing side.
         const bool is_right_swing = (s_Rdeg[2] - s_Rdeg[1] >= s_Ldeg[2] - s_Ldeg[1]);
-        const float hc_gap_ms = is_right_swing ? s_t_gap_R_ms : s_t_gap_L_ms;
-        s_HC_time_upcond = (s_HC_time_after_ms >= hc_gap_ms);
+        const bool hc_time_ok = is_right_swing ? s_HC_time_upcond_R : s_HC_time_upcond_L;
 
         // Swing-leg angle gate (deg), adaptive from last STS-classified HC.
         const float swing_deg = is_right_swing ? s_Rdeg[2] : s_Ldeg[2];
         const bool swing_deg_ok = (swing_deg >= s_hc_deg_thresh);
 
-        if (!s_HC_time_upcond || !swing_deg_ok) {
+        if (!hc_time_ok || !swing_deg_ok) {
             // Not enough time elapsed (per swing side) or swing angle too small; ignore this HC candidate.
         } else {
-            s_HC_time_upcond = false;
-            s_HC_time_after_ms = 0.0f;
+            if (is_right_swing) {
+                s_HC_time_upcond_R = false;
+                s_HC_time_after_R_ms = 0.0f;
+            } else {
+                s_HC_time_upcond_L = false;
+                s_HC_time_after_L_ms = 0.0f;
+            }
             hc_count++;
 
             if (is_right_swing) {
