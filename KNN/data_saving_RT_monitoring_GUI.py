@@ -444,7 +444,7 @@ class SerialWorker(QtCore.QObject):
     packet_error_count = pyqtSignal(int)   # 패킷 에러 누적 개수 신호
     sanity_error_count = pyqtSignal(int)   # CRC/len OK지만 값이 비정상인 경우(산티) 카운트
 
-    def __init__(self, port_name, baudrate=DEFAULT_BAUD, timeout=DEFAULT_TIMEOUT, parent=None):
+    def __init__(self, port_name, baudrate=DEFAULT_BAUD, timeout=DEFAULT_TIMEOUT, initial_skip=0, parent=None):
         super().__init__(parent)
         self.port_name = port_name
         self.baudrate = baudrate
@@ -466,6 +466,8 @@ class SerialWorker(QtCore.QObject):
         self._max_consecutive_packet_errors = 8
         self._max_consecutive_sanity_failures = 3
         self._len_mismatch_seen = 0
+        self._initial_skip = max(0, int(initial_skip or 0))
+        self._skip_remaining = self._initial_skip
 
     def _find_sof_index(self, buf: bytearray) -> int:
         """Return index of next SOF (LE only) in buf, or -1 if not found."""
@@ -583,6 +585,7 @@ class SerialWorker(QtCore.QObject):
             self._consecutive_sanity_failures = 0
             self._len_mismatch_seen = 0
             self._flush_serial(ser)
+            self._skip_remaining = self._initial_skip
 
             # Reduce latency on Windows USB-CDC adapters.
             try:
@@ -787,6 +790,9 @@ class SerialWorker(QtCore.QObject):
                         self._last_valid_emit_ts = time.time()
                         self._consecutive_packet_errors = 0
                         self._consecutive_sanity_failures = 0
+                        if self._skip_remaining > 0:
+                            self._skip_remaining -= 1
+                            continue
                         self.data_received.emit(row)
 
         finally:
@@ -1500,7 +1506,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self.serial_thread = QtCore.QThread()
-        self.serial_worker = SerialWorker(port_name, DEFAULT_BAUD, DEFAULT_TIMEOUT)
+        self.serial_worker = SerialWorker(port_name, DEFAULT_BAUD, DEFAULT_TIMEOUT, initial_skip=5)
         self.serial_worker.moveToThread(self.serial_thread)
 
         self.serial_thread.started.connect(self.serial_worker.run)
@@ -1538,7 +1544,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_log_path = None
 
         self.serial_thread = QtCore.QThread()
-        self.serial_worker = SerialWorker(port_name, DEFAULT_BAUD, DEFAULT_TIMEOUT)
+        self.serial_worker = SerialWorker(port_name, DEFAULT_BAUD, DEFAULT_TIMEOUT, initial_skip=5)
         self.serial_worker.moveToThread(self.serial_thread)
 
         self.serial_thread.started.connect(self.serial_worker.run)
