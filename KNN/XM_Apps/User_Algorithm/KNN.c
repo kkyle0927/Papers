@@ -167,6 +167,8 @@ static bool s_HC_time_upcond_R = false;
 static bool s_HC_time_upcond_L = false;
 static bool s_HC_Rswing4upcond = false;
 static bool s_HC_Lswing4upcond = false;
+static bool s_transition_trigger_R = false;
+static bool s_transition_trigger_L = false;
 
 // Peak detection counters (watch via Live Expressions / send via CDC)
 volatile int R_count_upeak = 0;
@@ -503,6 +505,42 @@ static void Standby_Loop(void)
 
     adaptive_assist((const GaitRecognitionResult_t*)&s_gait_rec, (bool*)&trig_R, (bool*)&trig_L, &ignored_R, &ignored_L);
 
+    if (s_transition_trigger_R || s_transition_trigger_L) {
+        if (s_transition_trigger_R) {
+            FVecDecoder_InitSingle(s_fvec_buf_RH);
+            s_tau_out_R = 0.0f;
+            s_tau_cmd_R = 0.0f;
+            XM_SetAssistTorqueRH(0.0f);
+            trig_R = true;
+        }
+        if (s_transition_trigger_L) {
+            FVecDecoder_InitSingle(s_fvec_buf_LH);
+            s_tau_out_L = 0.0f;
+            s_tau_cmd_L = 0.0f;
+            XM_SetAssistTorqueLH(0.0f);
+            trig_L = true;
+        }
+        s_transition_trigger_R = false;
+        s_transition_trigger_L = false;
+    }
+
+    if (s_transition_trigger_R || s_transition_trigger_L) {
+        if (s_transition_trigger_R) {
+            FVecDecoder_InitSingle(s_fvec_buf_RH);
+            s_tau_out_R = 0.0f;
+            s_tau_cmd_R = 0.0f;
+            trig_R = true;
+        }
+        if (s_transition_trigger_L) {
+            FVecDecoder_InitSingle(s_fvec_buf_LH);
+            s_tau_out_L = 0.0f;
+            s_tau_cmd_L = 0.0f;
+            trig_L = true;
+        }
+        s_transition_trigger_R = false;
+        s_transition_trigger_L = false;
+    }
+
     if (trig_R && !Rstop_assist) {
         float fvec[4] = { kManuscriptFVec[0], (float)tau_max_setting, kManuscriptFVec[2], kManuscriptFVec[3] };
         TriggerManuscriptFVecSingle(s_fvec_buf_RH, fvec);
@@ -822,6 +860,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     static int s_prev_count_dpeak_L = 0;
     static bool s_prev_Rflag_assist = false;
     static bool s_prev_Lflag_assist = false;
+    static int s_prev_is_moving = 0;
 
     if (res_out) {
         memset(res_out, 0, sizeof(*res_out));
@@ -837,6 +876,21 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
     const int is_moving = (feat != NULL) ? feat->is_moving : 0;
     if (res_out) res_out->is_moving = is_moving;
+
+    if (!s_prev_is_moving && is_moving && feat) {
+        const float vel_R = feat->wR_f;
+        const float vel_L = feat->wL_f;
+        const bool right_faster = (vel_R >= vel_L);
+        s_transition_trigger_R = right_faster;
+        s_transition_trigger_L = !right_faster;
+        Rflag_assist = false;
+        Lflag_assist = false;
+        if (right_faster) {
+            Rstop_assist = false;
+        } else {
+            Lstop_assist = false;
+        }
+    }
 
     if (s_R_time_afterup_ms >= s_t_gap_R_ms) s_R_time_upcond = true;
     if (s_L_time_afterup_ms >= s_t_gap_L_ms) s_L_time_upcond = true;
@@ -914,6 +968,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             }
             if (s_gait_mode == RSTS) {
                 Rstop_assist = true;
+                Lstop_assist = true;
+                // Trajectory decoding 즉시 중단 (양쪽 모두)
+                FVecDecoder_InitSingle(s_fvec_buf_RH);
+                FVecDecoder_InitSingle(s_fvec_buf_LH);
             }
         } else if (!is_right_swing) {
             s_HC_Lswing4upcond = true;
@@ -947,7 +1005,11 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
                 LowPeak_UpdateThresh_OnSTS(s_Ldeg[2]);
             }
             if (s_gait_mode == LSTS) {
+                Rstop_assist = true;
                 Lstop_assist = true;
+                // Trajectory decoding 즉시 중단 (양쪽 모두)
+                FVecDecoder_InitSingle(s_fvec_buf_RH);
+                FVecDecoder_InitSingle(s_fvec_buf_LH);
             }
         }
         }
@@ -1107,6 +1169,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     }
 
     // Lower peak detection
+
     if (s_Rdeg[2] > s_R_lowpeak_val + 10.0f) {
         s_R_lowpeak_val = s_thres_down;
     }
@@ -1114,13 +1177,22 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         (s_Rdeg[2] - s_Rdeg[1]) >= 0.0f &&
         s_Rdeg[2] <= s_R_lowpeak_val + 0.5f) {
         R_count_dpeak++;
-        s_R_lowpeak_val = s_Rdeg[2];
+        if (is_moving) {
+            s_R_lowpeak_val = s_Rdeg[2];
+        }
         s_R_prev_stance_angle_at_dpeak = s_Ldeg[2];
         s_R_stance_angle_sampled = true;
         s_dbg_R_stance_angle_sample = s_R_prev_stance_angle_at_dpeak;
         s_R_swing_time_ms = 0.0f;
+        // stop_assist는 오직 lower peak에서만 false로 바뀌고, 그 외에는 true 유지
         if (is_moving) {
-            Rstop_assist = false;
+            // 좌우 중 한쪽이라도 stop_assist가 true면, 둘 다 동시에 false로 바꾼다 (soft-stop이 0에 충분히 수렴했을 때)
+            if (Rstop_assist || Lstop_assist) {
+                if (fabsf(s_tau_cmd_R) < 0.01f && fabsf(s_tau_cmd_L) < 0.01f) {
+                    Rstop_assist = false;
+                    Lstop_assist = false;
+                }
+            }
             Rflag_assist = true;
         }
     }
@@ -1132,13 +1204,22 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
         (s_Ldeg[2] - s_Ldeg[1]) >= 0.0f &&
         s_Ldeg[2] <= s_L_lowpeak_val + 0.5f) {
         L_count_dpeak++;
-        s_L_lowpeak_val = s_Ldeg[2];
+        if (is_moving) {
+            s_L_lowpeak_val = s_Ldeg[2];
+        }
         s_L_prev_stance_angle_at_dpeak = s_Rdeg[2];
         s_L_stance_angle_sampled = true;
         s_dbg_L_stance_angle_sample = s_L_prev_stance_angle_at_dpeak;
         s_L_swing_time_ms = 0.0f;
+        // stop_assist는 오직 lower peak에서만 false로 바뀌고, 그 외에는 true 유지
         if (is_moving) {
-            Lstop_assist = false;
+            // 좌우 중 한쪽이라도 stop_assist가 true면, 둘 다 동시에 false로 바꾼다 (soft-stop이 0에 충분히 수렴했을 때)
+            if (Rstop_assist || Lstop_assist) {
+                if (fabsf(s_tau_cmd_R) < 0.01f && fabsf(s_tau_cmd_L) < 0.01f) {
+                    Rstop_assist = false;
+                    Lstop_assist = false;
+                }
+            }
             Lflag_assist = true;
         }
     }
@@ -1161,6 +1242,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     s_prev_count_dpeak_L = L_count_dpeak;
     s_prev_Rflag_assist = Rflag_assist;
     s_prev_Lflag_assist = Lflag_assist;
+    s_prev_is_moving = is_moving;
 }
 
 static void adaptive_assist(const GaitRecognitionResult_t* rec,
@@ -1334,6 +1416,8 @@ static void ResetUserState(void)
     s_is_moving = 0;
     s_dbg_wR_f = 0.0f;
     s_dbg_wL_f = 0.0f;
+    s_transition_trigger_R = false;
+    s_transition_trigger_L = false;
 
     memset((void*)&s_gait_feat, 0, sizeof(s_gait_feat));
     memset((void*)&s_gait_rec, 0, sizeof(s_gait_rec));
