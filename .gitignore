@@ -104,3 +104,6 @@ Release/
 # *.map
 /KNN
 /KNN
+
+# CSV files
+*.csv
