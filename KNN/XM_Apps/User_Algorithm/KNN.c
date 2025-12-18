@@ -250,7 +250,7 @@ volatile float s_vel_HC_dbg = 0.0f;
 volatile float s_T_HC_s_dbg = 0.0f;
 
 static float s_scaling_X = 105.6426f;
-static float s_scaling_Y = 835.8209f;
+static float s_scaling_Y = 1.67164f;
 
 // CDC/Live-expression mirrors (s_* are static above; these are global and volatile).
 volatile float s_dbg_norm_vel_HC = 0.0f;
@@ -693,7 +693,7 @@ static inline void HC_UpdateDegThresh_OnSTS(float swing_deg_meas)
     const float DEG_ALPHA  = 0.2f;
 
     const float deg_meas = clampf_ud(swing_deg_meas, HC_DEG_MIN, HC_DEG_MAX);
-    const float deg_target = 0.6f * deg_meas;
+    const float deg_target = 0.55f * deg_meas;
     s_hc_deg_thresh = (1.0f - DEG_ALPHA) * s_hc_deg_thresh + DEG_ALPHA * deg_target;
     s_dbg_hc_deg_thresh = s_hc_deg_thresh;
 }
@@ -945,7 +945,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
             const float swing_period_s = s_swing_period_ms * 0.001f;
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
-            s_norm_T_HC = ((s_T_HC_ms) / swing_period_s) / s_scaling_Y;
+            s_norm_T_HC = ((s_T_HC_ms * 0.001f) / swing_period_s) / s_scaling_Y;
 
             s_dbg_norm_vel_HC = s_norm_vel_HC;
             s_dbg_norm_T_HC = s_norm_T_HC;
@@ -983,7 +983,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
             const float swing_period_s = s_swing_period_ms * 0.001f;
             s_norm_vel_HC = (s_vel_HC * swing_period_s) / s_scaling_X;
-            s_norm_T_HC = ((s_T_HC_ms) / swing_period_s) / s_scaling_Y;
+            s_norm_T_HC = ((s_T_HC_ms * 0.001f) / swing_period_s) / s_scaling_Y;
 
             s_dbg_norm_vel_HC = s_norm_vel_HC;
             s_dbg_norm_T_HC = s_norm_T_HC;
@@ -1079,7 +1079,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
         if (s_last_HC_class_is_valid && !s_last_HC_is_STS) {
             const float raw_peak = fabsf(s_Rdeg[2]);
-            const float target_thresh = clampf_ud(0.4f * raw_peak, 5.0f, 120.0f);
+            const float target_thresh = clampf_ud(0.3f * raw_peak, 5.0f, 120.0f);
             const float ALPHA = 0.2f;
             s_R_stance_angle_gate = (1.0f - ALPHA) * s_R_stance_angle_gate + ALPHA * target_thresh;
             s_dbg_R_stance_angle_gate = s_R_stance_angle_gate;
@@ -1155,7 +1155,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
 
         if (s_last_HC_class_is_valid && !s_last_HC_is_STS) {
             const float raw_peak = fabsf(s_Ldeg[2]);
-            const float target_thresh = clampf_ud(0.4f * raw_peak, 5.0f, 120.0f);
+            const float target_thresh = clampf_ud(0.3f * raw_peak, 5.0f, 120.0f);
             const float ALPHA = 0.2f;
             s_L_stance_angle_gate = (1.0f - ALPHA) * s_L_stance_angle_gate + ALPHA * target_thresh;
             s_dbg_L_stance_angle_gate = s_L_stance_angle_gate;
