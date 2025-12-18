@@ -152,8 +152,8 @@ static float s_Ldeg[3] = {0.0f, 0.0f, 0.0f};
 
 // Filters (ported; timebase adjusted for CTRL_FS_HZ)
 static const float s_fs = CTRL_FS_HZ;
-static const float s_fc_theta = 10.0f;
-static const float s_alpha_theta = 0.0591174f;
+static const float s_fc_theta = 20.0f;
+static const float s_alpha_theta = 0.2008486f;
 static const float s_fc_omega = 25.0f;
 static const float s_alpha_omega = 0.1357552f;
 static float s_y_prev_R = 0.0f;
