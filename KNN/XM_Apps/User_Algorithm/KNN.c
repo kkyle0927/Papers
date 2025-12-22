@@ -20,7 +20,7 @@
 #include <math.h>
 
 // KNN dataset
-#include "KNN_ref_dataset_v1.h"
+#include "KNN_ref_dataset_251222.h"
 
 // Uses the same f-vector decoding approach as user_app.c (slot-based IIR)
 #define F_VECTOR_NUM_MODES   10
@@ -249,14 +249,14 @@ static float s_norm_T_HC = 0.0f;
 volatile float s_vel_HC_dbg = 0.0f;
 volatile float s_T_HC_s_dbg = 0.0f;
 
-static float s_scaling_X = 105.6426f;
-static float s_scaling_Y = 1.67164f;
+static float s_scaling_X = 92.15f;
+static float s_scaling_Y = 0.91f;
 
 // CDC/Live-expression mirrors (s_* are static above; these are global and volatile).
 volatile float s_dbg_norm_vel_HC = 0.0f;
 volatile float s_dbg_norm_T_HC = 0.0f;
-volatile float s_dbg_scaling_X = 105.6426f;
-volatile float s_dbg_scaling_Y = 835.8209f;
+volatile float s_dbg_scaling_X = 92.15f;
+volatile float s_dbg_scaling_Y = 0.91f;
 
 // CDC/Live-expression mirrors for adaptive parameters
 volatile float s_dbg_t_gap_R_ms = 300.0f;
