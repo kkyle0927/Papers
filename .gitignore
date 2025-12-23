@@ -102,8 +102,7 @@ Release/
 # -----------------------------------------
 # *.ld
 # *.map
-/KNN
-/KNN
+KNN/Debug/
 
 # CSV files
 *.csv
