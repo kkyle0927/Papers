@@ -216,8 +216,8 @@ static float s_swing_period_ms = 300.0f;
 static float s_hc_deg_thresh = 10.0f;
 
 // Track swing time separately by classification category (no left/right split).
-static float s_T_swing_SOS_ms = 484.0f;
-static float s_T_swing_STS_ms = 366.0f;
+static float s_T_swing_SOS_ms = 455.0f;
+static float s_T_swing_STS_ms = 338.0f;
 static bool s_last_HC_class_is_valid = false;
 static bool s_last_HC_is_STS = false;
 
@@ -225,8 +225,8 @@ static bool s_last_HC_is_STS = false;
 volatile float T_swing_ms = 300.0f;
 
 // Debug-visible latest swing times by class (ms).
-volatile float T_swing_SOS_ms = 484.0f;
-volatile float T_swing_STS_ms = 366.0f;
+volatile float T_swing_SOS_ms = 455.0f;
+volatile float T_swing_STS_ms = 338.0f;
 volatile float TswingRecording_ms = 0.0f;
 
 static float s_vel_HC = 0.0f;
@@ -1263,18 +1263,11 @@ static void ResetUserState(void)
     Lstop_assist = false;
 
     s_loop_count = 0;
-    memset(s_Rdeg, 0, sizeof(s_Rdeg));
-    memset(s_Ldeg, 0, sizeof(s_Ldeg));
 
     Recording = Record_OFF;
     SmartAssist = SmartAssist_OFF;
     sync_signal = XM_LOW;
     sync_signal_pre = XM_LOW;
-
-    s_y_prev_R = 0.0f;
-    s_y_prev_L = 0.0f;
-    s_w_prev_R = 0.0f;
-    s_w_prev_L = 0.0f;
 
     s_R_time_upcond = false;
     s_L_time_upcond = false;
@@ -1320,8 +1313,8 @@ static void ResetUserState(void)
     s_HC_time_after_L_ms = 0.0f;
 
     s_swing_period_ms = 300.0f;
-    s_T_swing_SOS_ms = 198.0f;
-    s_T_swing_STS_ms = 245.0f;
+    s_T_swing_SOS_ms = 455.0f;
+    s_T_swing_STS_ms = 338.0f;
 
     s_last_HC_class_is_valid = false;
     s_last_HC_is_STS = false;
