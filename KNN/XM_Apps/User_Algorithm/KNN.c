@@ -216,8 +216,8 @@ static float s_swing_period_ms = 300.0f;
 static float s_hc_deg_thresh = 10.0f;
 
 // Track swing time separately by classification category (no left/right split).
-static float s_T_swing_SOS_ms = 198.0f;
-static float s_T_swing_STS_ms = 245.0f;
+static float s_T_swing_SOS_ms = 484.0f;
+static float s_T_swing_STS_ms = 366.0f;
 static bool s_last_HC_class_is_valid = false;
 static bool s_last_HC_is_STS = false;
 
@@ -225,8 +225,8 @@ static bool s_last_HC_is_STS = false;
 volatile float T_swing_ms = 300.0f;
 
 // Debug-visible latest swing times by class (ms).
-volatile float T_swing_SOS_ms = 198.0f;
-volatile float T_swing_STS_ms = 245.0f;
+volatile float T_swing_SOS_ms = 484.0f;
+volatile float T_swing_STS_ms = 366.0f;
 volatile float TswingRecording_ms = 0.0f;
 
 static float s_vel_HC = 0.0f;
