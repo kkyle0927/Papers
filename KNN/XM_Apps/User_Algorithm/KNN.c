@@ -497,42 +497,6 @@ static void Standby_Loop(void)
 
     adaptive_assist((const GaitRecognitionResult_t*)&s_gait_rec, (bool*)&trig_R, (bool*)&trig_L, &ignored_R, &ignored_L);
 
-    if (s_transition_trigger_R || s_transition_trigger_L) {
-        if (s_transition_trigger_R) {
-            FVecDecoder_InitSingle(s_fvec_buf_RH);
-            s_tau_out_R = 0.0f;
-            s_tau_cmd_R = 0.0f;
-            XM_SetAssistTorqueRH(0.0f);
-            trig_R = true;
-        }
-        if (s_transition_trigger_L) {
-            FVecDecoder_InitSingle(s_fvec_buf_LH);
-            s_tau_out_L = 0.0f;
-            s_tau_cmd_L = 0.0f;
-            XM_SetAssistTorqueLH(0.0f);
-            trig_L = true;
-        }
-        s_transition_trigger_R = false;
-        s_transition_trigger_L = false;
-    }
-
-    if (s_transition_trigger_R || s_transition_trigger_L) {
-        if (s_transition_trigger_R) {
-            FVecDecoder_InitSingle(s_fvec_buf_RH);
-            s_tau_out_R = 0.0f;
-            s_tau_cmd_R = 0.0f;
-            trig_R = true;
-        }
-        if (s_transition_trigger_L) {
-            FVecDecoder_InitSingle(s_fvec_buf_LH);
-            s_tau_out_L = 0.0f;
-            s_tau_cmd_L = 0.0f;
-            trig_L = true;
-        }
-        s_transition_trigger_R = false;
-        s_transition_trigger_L = false;
-    }
-
     if (trig_R && !Rstop_assist) {
         float fvec[4] = { kManuscriptFVec[0], (float)tau_max_setting, kManuscriptFVec[2], kManuscriptFVec[3] };
         TriggerManuscriptFVecSingle(s_fvec_buf_RH, fvec);
@@ -616,6 +580,26 @@ static void Active_Loop(void)
     s_dbg_wL_f = s_gait_feat.wL_f;
 
     adaptive_assist((const GaitRecognitionResult_t*)&s_gait_rec, (bool*)&trig_R, (bool*)&trig_L, &ignored_R, &ignored_L);
+
+    // 0->1 transition 예외 보조: ACTIVE에서도 반드시 소비
+    if (s_transition_trigger_R || s_transition_trigger_L) {
+        if (s_transition_trigger_R) {
+            FVecDecoder_InitSingle(s_fvec_buf_RH);
+            s_tau_out_R = 0.0f;
+            s_tau_cmd_R = 0.0f;
+            XM_SetAssistTorqueRH(0.0f);
+            trig_R = true;  // lower peak 때와 동일하게 트리거 경로로 연결
+        }
+        if (s_transition_trigger_L) {
+            FVecDecoder_InitSingle(s_fvec_buf_LH);
+            s_tau_out_L = 0.0f;
+            s_tau_cmd_L = 0.0f;
+            XM_SetAssistTorqueLH(0.0f);
+            trig_L = true;
+        }
+        s_transition_trigger_R = false;
+        s_transition_trigger_L = false;
+    }
 
     if (trig_R && !Rstop_assist) {
         float fvec[4] = { kManuscriptFVec[0], (float)tau_max_setting, kManuscriptFVec[2], kManuscriptFVec[3] };
@@ -877,14 +861,15 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
     if (res_out) res_out->is_moving = is_moving;
 
     if (!s_prev_is_moving && is_moving && feat) {
-        const float vel_R = feat->wR_f;
-        const float vel_L = feat->wL_f;
-        const bool right_faster = (vel_R >= vel_L);
-        s_transition_trigger_R = right_faster;
-        s_transition_trigger_L = !right_faster;
+        // 0->1 순간: 현재 swing 중인 쪽을 선택
+        const bool is_right_swing = (s_Rdeg[2] - s_Rdeg[1] >= s_Ldeg[2] - s_Ldeg[1]);
+
+        s_transition_trigger_R = is_right_swing;
+        s_transition_trigger_L = !is_right_swing;
+
         Rflag_assist = false;
         Lflag_assist = false;
-        if (right_faster) {
+        if (is_right_swing) {
             Rstop_assist = false;
         } else {
             Lstop_assist = false;
