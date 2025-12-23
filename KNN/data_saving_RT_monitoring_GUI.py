@@ -1059,14 +1059,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for t in getattr(self, '_hc_text_items', []):
                 self.plot_widgets[3].removeItem(t)
             self._hc_text_items = []
-            # hc_count 넘버링 추출
-            hc_counts = []
-            try:
-                hc_idx = CSV_COLS.index("hc_count")
-                # 최근 N개만 추출
-                hc_counts = [int(r[hc_idx]) for r in self.data_all[-SCATTER_KEEP_LAST_N:]]
-            except Exception:
-                hc_counts = [str(i+1) for i in range(total_pts)]
+            # 넘버링: 첫번째는 1, n번째는 n
             for idx, (x_raw, y_raw, br) in enumerate(zip(self._hc_points_x, self._hc_points_y, self._hc_points_brush)):
                 color = br.color() if isinstance(br, QtGui.QBrush) else QtGui.QColor("#6b7280")
                 is_latest = (idx == total_pts - 1)
@@ -1096,11 +1089,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     "symbol": symbol,
                 }
                 spots.append(spot)
-                # 넘버링 텍스트 추가
-                if idx < len(hc_counts):
-                    text = str(hc_counts[idx])
-                else:
-                    text = str(idx+1)
+                # 넘버링 텍스트: 1, 2, 3, ...
+                text = str(idx + 1)
                 text_item = pg.TextItem(text, color=color, anchor=(0.5, 1.2), border=None, fill=None)
                 text_item.setFont(QtGui.QFont("Segoe UI", 10, QtGui.QFont.Bold))
                 text_item.setPos(x, y)
