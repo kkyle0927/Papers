@@ -20,7 +20,7 @@
 #include <math.h>
 
 // KNN dataset
-#include "KNN_ref_dataset_v1.h"
+#include "KNN_ref_dataset_251223.h"
 
 // Uses the same f-vector decoding approach as user_app.c (slot-based IIR)
 #define F_VECTOR_NUM_MODES   10
@@ -216,14 +216,8 @@ static float s_swing_period_ms = 300.0f;
 static float s_hc_deg_thresh = 10.0f;
 
 // Track swing time separately by classification category (no left/right split).
-static float s_T_swing_SOS_ms = 300.0f;
-static float s_T_swing_STS_ms = 300.0f;
-// For normalization, keep the most-recent swing times whose KNN confidence is exactly 1.0.
-// Initialized to 300 ms for both classes, as requested.
-static float s_T_swing_SOS_ms_conf1 = 300.0f;
-static float s_T_swing_STS_ms_conf1 = 300.0f;
-static bool  s_T_swing_SOS_has_conf1 = false;
-static bool  s_T_swing_STS_has_conf1 = false;
+static float s_T_swing_SOS_ms = 198.0f;
+static float s_T_swing_STS_ms = 245.0f;
 static bool s_last_HC_class_is_valid = false;
 static bool s_last_HC_is_STS = false;
 
@@ -231,11 +225,8 @@ static bool s_last_HC_is_STS = false;
 volatile float T_swing_ms = 300.0f;
 
 // Debug-visible latest swing times by class (ms).
-volatile float T_swing_SOS_ms = 300.0f;
-volatile float T_swing_STS_ms = 300.0f;
-// Debug-visible most recent conf==1 swing times.
-volatile float T_swing_SOS_ms_conf1 = 300.0f;
-volatile float T_swing_STS_ms_conf1 = 300.0f;
+volatile float T_swing_SOS_ms = 198.0f;
+volatile float T_swing_STS_ms = 245.0f;
 volatile float TswingRecording_ms = 0.0f;
 
 static float s_vel_HC = 0.0f;
@@ -249,14 +240,14 @@ static float s_norm_T_HC = 0.0f;
 volatile float s_vel_HC_dbg = 0.0f;
 volatile float s_T_HC_s_dbg = 0.0f;
 
-static float s_scaling_X = 105.6426f;
-static float s_scaling_Y = 1.67164f;
+static float s_scaling_X = 92.15f;
+static float s_scaling_Y = 0.91f;
 
 // CDC/Live-expression mirrors (s_* are static above; these are global and volatile).
 volatile float s_dbg_norm_vel_HC = 0.0f;
 volatile float s_dbg_norm_T_HC = 0.0f;
-volatile float s_dbg_scaling_X = 105.6426f;
-volatile float s_dbg_scaling_Y = 835.8209f;
+volatile float s_dbg_scaling_X = 92.15f;
+volatile float s_dbg_scaling_Y = 0.91f;
 
 // CDC/Live-expression mirrors for adaptive parameters
 volatile float s_dbg_t_gap_R_ms = 300.0f;
@@ -265,6 +256,8 @@ volatile float s_dbg_hc_deg_thresh = 10.0f;
 volatile float s_dbg_thres_up = 10.0f;
 volatile float s_dbg_thres_down = 10.0f;
 
+volatile float s_g_knn_conf = 0.0f;
+
 #ifndef KNN_REF_COUNT
 #  define KNN_REF_COUNT    REF_COUNT
 #endif
@@ -272,13 +265,12 @@ volatile float s_dbg_thres_down = 10.0f;
 #  define KNN_REF_SPLIT    REF_TYPE1_COUNT
 #endif
 #ifndef KNN_K
-#  define KNN_K            9
+#  define KNN_K            23
 #endif
 
 // KNN classification outputs (watch via Live Expressions / send via CDC)
 // Exposed as a single combined gait mode.
 volatile GaitMode_t s_gait_mode = NONE;
-volatile float s_g_knn_conf = 0.0f;
 
 typedef enum {
     GAIT_LATCH_NONE = 0,
@@ -727,10 +719,8 @@ static inline void LowPeak_UpdateThresh_OnSTS(float swing_deg_meas)
     s_dbg_thres_down = s_thres_down;
 }
 
-static int knn_2label_majority_ud(const float (*xy)[2], int n, int split,
-                                  float x, float y, int k, float* conf_out)
+static int knn_2label_majority_ud(const float (*xy)[2], int n, int split, float x, float y, int k, volatile float *conf_out)
 {
-    if (n <= 0) { if (conf_out) *conf_out = 0.0f; return 0; }
 
     int kk = k;
     if (kk < 1) kk = 1;
@@ -767,16 +757,25 @@ static int knn_2label_majority_ud(const float (*xy)[2], int n, int split,
         }
     }
 
-    int c1 = 0, c2 = 0;
+    float w1 = 0.0f, w2 = 0.0f;
+    const float eps = 2.2204e-16f;
+
     for (int i = 0; i < used; ++i) {
-        if (best_lab[i] == 1u) ++c1; else ++c2;
+        float dist = sqrtf(best_d2[i]);     // best_d2가 dx^2+dy^2 이므로 sqrt
+        float w = 1.0f / (dist + eps);
+
+        if (best_lab[i] == 1u) w1 += w;
+        else                   w2 += w;
     }
 
-    int label = (c1 >= c2) ? 1 : 2;
+    // confidence = max(wSOS, wSTS) / (wSOS + wSTS)
     if (conf_out) {
-        int maxc = (c1 >= c2) ? c1 : c2;
-        *conf_out = (used > 0) ? ((float)maxc / (float)used) : 0.0f;
+        float wsum = w1 + w2;
+        float wmax = (w1 >= w2) ? w1 : w2;
+        *conf_out = (wsum > 0.0f) ? (wmax / wsum) : 0.0f;
     }
+
+    int label = (w1 >= w2) ? 1 : 2;
     return label;
 }
 
@@ -952,8 +951,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             s_dbg_scaling_X = s_scaling_X;
             s_dbg_scaling_Y = s_scaling_Y;
 
-            const int knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT,
-                                                        s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
+            const int knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT, s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
             s_gait_mode = (knn_label == 1) ? RSTS : RSOS;
             s_gait_mode_latch_leg = GAIT_LATCH_R;
 
@@ -990,8 +988,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             s_dbg_scaling_X = s_scaling_X;
             s_dbg_scaling_Y = s_scaling_Y;
 
-            const int knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT,
-                                                        s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
+            const int knn_label = knn_2label_majority_ud(ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT, s_norm_vel_HC, s_norm_T_HC, KNN_K, &s_g_knn_conf);
             s_gait_mode = (knn_label == 1) ? LSTS : LSOS;
             s_gait_mode_latch_leg = GAIT_LATCH_L;
 
@@ -1047,32 +1044,15 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             if (s_last_HC_is_STS) {
                 s_T_swing_STS_ms = measured_swing_ms;
                 T_swing_STS_ms = s_T_swing_STS_ms;
-                if (s_g_knn_conf == 1.0f) {
-                    s_T_swing_STS_ms_conf1 = measured_swing_ms;
-                    s_T_swing_STS_has_conf1 = true;
-                    T_swing_STS_ms_conf1 = s_T_swing_STS_ms_conf1;
-                }
             } else {
                 s_T_swing_SOS_ms = measured_swing_ms;
                 T_swing_SOS_ms = s_T_swing_SOS_ms;
-                if (s_g_knn_conf == 1.0f) {
-                    s_T_swing_SOS_ms_conf1 = measured_swing_ms;
-                    s_T_swing_SOS_has_conf1 = true;
-                    T_swing_SOS_ms_conf1 = s_T_swing_SOS_ms_conf1;
-                }
             }
         }
         TswingRecording_ms = measured_swing_ms;
 
-        // Normalization uses mean of the most recent SOS/STS swing times whose conf==1.
-        // Before both are observed (early after gait start), use initial 300/300.
-        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 300.0f;
-        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 300.0f;
-        if (s_T_swing_SOS_has_conf1 && s_T_swing_STS_has_conf1) {
-            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
-        } else {
-            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
-        }
+        // Normalization uses mean of the most recent SOS/STS swing times (regardless of confidence).
+        s_swing_period_ms = 0.5f * (s_T_swing_SOS_ms + s_T_swing_STS_ms);
         T_swing_ms = s_swing_period_ms;
         s_R_time_afterup_ms = 0.0f;
         s_HC_Rswing4upcond = false;
@@ -1123,33 +1103,17 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t* feat,
             if (s_last_HC_is_STS) {
                 s_T_swing_STS_ms = measured_swing_ms;
                 T_swing_STS_ms = s_T_swing_STS_ms;
-                if (s_g_knn_conf == 1.0f) {
-                    s_T_swing_STS_ms_conf1 = measured_swing_ms;
-                    s_T_swing_STS_has_conf1 = true;
-                    T_swing_STS_ms_conf1 = s_T_swing_STS_ms_conf1;
-                }
             } else {
                 s_T_swing_SOS_ms = measured_swing_ms;
                 T_swing_SOS_ms = s_T_swing_SOS_ms;
-                if (s_g_knn_conf == 1.0f) {
-                    s_T_swing_SOS_ms_conf1 = measured_swing_ms;
-                    s_T_swing_SOS_has_conf1 = true;
-                    T_swing_SOS_ms_conf1 = s_T_swing_SOS_ms_conf1;
-                }
             }
         }
         TswingRecording_ms = measured_swing_ms;
 
-        // Normalization uses mean of the most recent SOS/STS swing times whose conf==1.
-        // Before both are observed (early after gait start), use initial 300/300.
-        const float sos_ms = s_T_swing_SOS_has_conf1 ? s_T_swing_SOS_ms_conf1 : 300.0f;
-        const float sts_ms = s_T_swing_STS_has_conf1 ? s_T_swing_STS_ms_conf1 : 300.0f;
-        if (s_T_swing_SOS_has_conf1 && s_T_swing_STS_has_conf1) {
-            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
-        } else {
-            s_swing_period_ms = 0.5f * (sos_ms + sts_ms);
-        }
+        // Normalization uses mean of the most recent SOS/STS swing times (regardless of confidence).
+        s_swing_period_ms = 0.5f * (s_T_swing_SOS_ms + s_T_swing_STS_ms);
         T_swing_ms = s_swing_period_ms;
+
         s_L_time_afterup_ms = 0.0f;
         s_HC_Lswing4upcond = false;
 
@@ -1371,20 +1335,15 @@ static void ResetUserState(void)
     s_HC_time_after_L_ms = 0.0f;
 
     s_swing_period_ms = 300.0f;
-    s_T_swing_SOS_ms = 300.0f;
-    s_T_swing_STS_ms = 300.0f;
-    s_T_swing_SOS_ms_conf1 = 300.0f;
-    s_T_swing_STS_ms_conf1 = 300.0f;
-    s_T_swing_SOS_has_conf1 = false;
-    s_T_swing_STS_has_conf1 = false;
+    s_T_swing_SOS_ms = 198.0f;
+    s_T_swing_STS_ms = 245.0f;
+
     s_last_HC_class_is_valid = false;
     s_last_HC_is_STS = false;
 
     T_swing_ms = s_swing_period_ms;
     T_swing_SOS_ms = s_T_swing_SOS_ms;
     T_swing_STS_ms = s_T_swing_STS_ms;
-    T_swing_SOS_ms_conf1 = s_T_swing_SOS_ms_conf1;
-    T_swing_STS_ms_conf1 = s_T_swing_STS_ms_conf1;
 
     s_hc_deg_thresh = 10.0f;
     s_dbg_hc_deg_thresh = s_hc_deg_thresh;

@@ -16,6 +16,27 @@ import pyqtgraph as pg
 import numpy as np
 from collections import deque, Counter
 
+# KNN 헤더 파싱 함수
+def load_knn_ref_dataset_from_header(header_path):
+    import re
+    with open(header_path, 'r', encoding='utf-8') as f:
+        text = f.read()
+    # REF_TYPE1_COUNT
+    m = re.search(r'#define\s+REF_TYPE1_COUNT\s+(\d+)', text)
+    split = int(m.group(1)) if m else 280
+    # ref_xy 배열 추출
+    arr_txt = re.search(r'static const float ref_xy\[.*?\]=\s*\{([\s\S]*?)\};', text)
+    arr_lines = arr_txt.group(1).split('\n') if arr_txt else []
+    data = []
+    for line in arr_lines:
+        line = line.strip().rstrip(',')
+        if not line:
+            continue
+        vals = re.findall(r'([-+]?[0-9]*\.?[0-9]+)f?', line)
+        if len(vals) == 2:
+            data.append([float(vals[0]), float(vals[1])])
+    return np.array(data), split
+
 # ===================== 0) 백엔드 고정 설정 =====================
 UPDATE_INTERVAL_MS = 50         # 실시간 그래프 갱신 주기 (ms) (20Hz)
 WINDOW_SIZE_SAMPLES = 1000      # 실시간 플롯 최근 샘플 수
@@ -457,6 +478,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._knn_bg_item = None
         self._add_knn_boundary_background()
 
+        # QTimer로 일정 주기마다 플롯 갱신 (과거 방식과 동일)
+        self._plot_timer = QtCore.QTimer(self)
+        self._plot_timer.timeout.connect(self.update_all_plots)
+        self._plot_timer.start(UPDATE_INTERVAL_MS)
+
     def _center_window(self):
         qr = self.frameGeometry()
         cp = QtWidgets.QDesktopWidget().availableGeometry().center()
@@ -464,96 +490,81 @@ class MainWindow(QtWidgets.QMainWindow):
         self.move(qr.topLeft())
 
     def _add_knn_boundary_background(self):
+        """KNN 배경 이미지 생성 및 Plot 4 축 범위 강제 고정 (디버그 출력 제거 버전)"""
         try:
-            ref_xy = np.array([
-                [0.056283044, 0.812457471], [0.216433485, 0.533504801], [0.103343184, 0.553624233], [0.167350235, 0.622434797],
-                [0.123376792, 0.506737728], [0.146298521, 0.679953451], [0.085075245, 0.900155400], [0.214617293, 0.603675645],
-                [0.165249936, 0.548319035], [0.236336795, 0.506228119], [0.050060151, 0.610580211], [0.058809125, 0.939578264],
-                [0.148559605, 0.580091132], [0.180091609, 0.615861133], [0.070157844, 0.853805093], [0.125425607, 0.520688969],
-                [0.105087971, 0.621674323], [0.155711479, 0.622315684], [0.045311147, 0.651765762], [0.300033386, 0.464940947],
-                [0.164841087, 0.631182669], [0.039776525, 0.690191432], [0.007588241, 0.886591070], [0.064209842, 0.573318592],
-                [0.048555530, 0.531371696], [0.168984756, 0.661884890], [0.074505037, 0.833850517], [0.203398496, 0.482770626],
-                [0.151297539, 0.757309133], [0.016573101, 0.915398484], [0.188927412, 0.610781600], [0.118861799, 0.581747257],
-                [0.267921206, 0.534712372], [0.117619267, 0.641928007], [0.095974685, 0.512466321], [0.116986367, 0.579734290],
-                [0.202095399, 0.605154518], [0.065373111, 0.748502628], [0.164439079, 0.570198105], [0.151505817, 0.501254759],
-                [0.165164802, 0.495408422], [0.065658004, 0.780340303], [0.165120346, 0.721899408], [0.218973395, 0.461209996],
-                [0.156936734, 0.653684279], [0.065286755, 0.717222645], [0.141795555, 0.677595112], [0.150391074, 0.567558299],
-                [0.176384319, 0.476937112], [0.091218450, 0.574652778], [0.117815561, 0.793374048], [0.148848268, 0.921301908],
-                [0.084426434, 0.933724944], [0.117088615, 0.868909538], [0.161766136, 0.696835467], [0.179750043, 0.860114123],
-                [0.152964144, 0.861422979], [0.121100364, 0.864434948], [0.319304826, 0.702353395], [0.166964727, 0.775858046],
-                [0.114514668, 0.870125585], [0.173580187, 0.753951984], [0.164953401, 0.682117759], [0.151768409, 0.920655834],
-                [0.134745511, 0.925589437], [0.194053616, 0.711930941], [0.085563075, 0.915187757], [0.134297015, 0.736156500],
-                [0.119795816, 0.746557455], [0.075635815, 0.922612212], [0.113677117, 0.914742497], [0.153371458, 0.917359536],
-                [0.160544194, 0.829508283], [0.008788089, 0.772924789], [0.097836149, 0.896313767], [0.110457627, 0.800192461],
-                [0.170293915, 0.709928855], [0.110959319, 0.806743582], [0.122782900, 0.946774003], [0.084865359, 0.677731381],
-                [0.112365015, 0.906119163], [0.066148453, 0.933318092], [0.117533334, 0.919886698], [-0.014705270, 0.956741133],
-                [0.242036896, 0.733177682], [0.111218501, 0.935407022], [0.096446113, 0.960829574], [0.219067898, 0.717349715],
-                [0.186017175, 0.726863171], [0.111505647, 0.883082235], [0.079919453, 0.937281991], [0.202517777, 0.751407159],
-                [0.086322895, 0.934591268], [0.142600709, 0.644611772], [0.069964816, 0.953859253], [0.132558252, 0.947143937],
-                [0.148042932, 0.928731762], [0.011679818, 1.000000000], [0.124148566, 0.874728829], [0.118727533, 0.922026118],
-                [0.734182128, 0.424845381], [0.620250138, 0.363237311], [0.714320293, 0.382263555], [0.663319745, 0.343509084],
-                [0.821432234, 0.407900338], [0.715174489, 0.358162672], [0.903727407, 0.422515623], [0.934068377, 0.426232524],
-                [0.690639389, 0.379198340], [0.800497469, 0.440803612], [0.722050329, 0.364564665], [0.983725123, 0.437183488],
-                [0.488451025, 0.397724060], [0.756185858, 0.378276892], [0.840396523, 0.407622918], [0.928220485, 0.431695892],
-                [0.840759770, 0.349156118], [0.535232107, 0.369312583], [0.792495782, 0.442410507], [0.712959097, 0.405203882],
-                [0.732892781, 0.333390889], [0.800761489, 0.347991950], [0.682929958, 0.353316453], [0.852332718, 0.447560259],
-                [0.803633844, 0.504764615], [0.796253323, 0.388777435], [0.785497455, 0.407213157], [0.672187898, 0.479097488],
-                [0.859462985, 0.448956430], [1.000000000, 0.391155044], [0.883073021, 0.509606210], [0.860628505, 0.396132527],
-                [0.948673882, 0.454046639], [0.730215282, 0.298802752], [0.900205868, 0.324414980], [0.918059731, 0.390067340],
-                [0.921679503, 0.330672808], [0.797655251, 0.324817980], [0.706006253, 0.374529865], [0.888629755, 0.466934426],
-                [0.662300801, 0.326369631], [0.852102576, 0.436751224], [0.843862285, 0.460910135], [0.814429464, 0.342009157],
-                [0.669387499, 0.345274035], [0.593016460, 0.391065976], [0.752207827, 0.416554178], [0.679356050, 0.413403693],
-                [0.745391190, 0.341359519], [0.901237992, 0.375648508], [0.669138555, 0.445055617], [0.594019640, 0.357673501],
-                [0.820970905, 0.364379880], [0.752417142, 0.342611412], [0.682912124, 0.500786734], [0.698526602, 0.373070169],
-                [0.782166028, 0.561100305], [0.597899597, 0.412822456], [0.803921277, 0.348322682], [0.605410999, 0.455305083],
-                [0.665630343, 0.406502489], [0.570267511, 0.461156441], [0.648099226, 0.326810648], [0.755196417, 0.415286560],
-                [0.686861845, 0.340534979], [0.539176513, 0.378201377], [0.803520557, 0.341308923], [0.660043235, 0.519137241],
-                [0.506834894, 0.400488321], [0.776665463, 0.359883558], [0.557482589, 0.457371249], [0.628852818, 0.411566816],
-                [0.655200350, 0.398125454], [0.586488000, 0.390698772], [0.554367927, 0.460670662], [0.573641337, 0.429675018],
-                [0.744173662, 0.370392312], [0.573718142, 0.468576132], [0.888946588, 0.489472256], [0.590575951, 0.350577566],
-                [0.686857784, 0.436310442], [0.714857238, 0.344036624], [0.814969958, 0.385466678], [0.748335296, 0.408255004],
-                [0.816424237, 0.357561728], [0.896372924, 0.373212578], [0.892950904, 0.352088845], [0.732521864, 0.426458462],
-                [0.849154605, 0.354324248], [0.841388998, 0.489108156], [0.884947243, 0.427692013], [0.827210466, 0.332781994],
-                [0.714442384, 0.403684447], [0.949002133, 0.486408140], [0.710084739, 0.433956080], [0.666811841, 0.356992060],
-                [0.710584151, 0.361434238], [0.823661690, 0.369028723], [0.720436661, 0.400038986], [0.766927491, 0.364572743]
-            ])
-            split = 100
-            k = 9
+            # 1. KNN 데이터셋 로드 (출력 없이 로직만 수행)
+            knn_py_path = os.path.join(os.path.dirname(__file__), 'KNN_ref_dataset_251223_python.txt')
+            knn_globals = {}
+            with open(knn_py_path, 'r', encoding='utf-8') as f:
+                exec(f.read(), {"np": np}, knn_globals)
+            
+            ref_xy = knn_globals['ref_xy']
+            split = knn_globals['split']
+            k = knn_globals['k']
+
+            if ref_xy.shape[0] == 0:
+                return
+
+            # 2. KNN 분류 알고리즘 (테스트 출력부 삭제)
             def knn_classify(x, y):
-                d2 = np.sum((ref_xy - np.array([x, y]))**2, axis=1)
-                idx = np.argsort(d2)[:k]
-                labs = np.where(idx < split, 1, 2)
-                c1 = np.sum(labs == 1)
-                c2 = np.sum(labs == 2)
-                return 1 if c1 >= c2 else 2
+                diff = ref_xy - np.array([x, y], dtype=float)
+                d = np.sqrt(np.sum(diff * diff, axis=1))
+                sorted_indices = np.argsort(d)
+                k_indices = sorted_indices[:k]
+                k_dists = d[k_indices]
 
-            res = 200
-            xg = np.linspace(0, 1.5, res)
-            yg = np.linspace(0, 1.5, res)
-            grid = np.zeros((res, res), dtype=np.uint8)
-            for ix, x in enumerate(xg):
-                for iy, y in enumerate(yg):
-                    grid[iy, ix] = knn_classify(x, y)
+                zero_mask = (k_dists == 0.0)
+                if np.any(zero_mask):
+                    zero_indices = k_indices[zero_mask]
+                    return 1 if np.any(zero_indices < split) else 2
 
-            color_map = np.zeros((res, res, 4), dtype=np.uint8)
-            color_map[grid == 1] = [220, 38, 38, 60]   # Red, alpha=60
-            color_map[grid == 2] = [37, 99, 235, 60]   # Blue, alpha=60
+                weights = 1.0 / k_dists
+                score_sts = 0.0
+                score_sos = 0.0
+                for idx, w in zip(k_indices, weights):
+                    if idx < split: score_sts += w
+                    else: score_sos += w
+                
+                if abs(score_sts - score_sos) < 1e-12: return 1
+                return 1 if score_sts > score_sos else 2
 
-            from pyqtgraph import ImageItem
-            img = ImageItem(color_map, axisOrder='row-major')
+            # 3. 배경 이미지 행렬 생성
+            res = 400
+            x_grid = np.linspace(0.0, 1.5, res)
+            y_grid = np.linspace(0.0, 1.5, res)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            zz = np.zeros_like(xx, dtype=np.uint8)
+            for i in range(res):
+                for j in range(res):
+                    zz[i, j] = knn_classify(xx[i, j], yy[i, j])
+
+            colors = np.empty(xx.shape + (4,), dtype=np.ubyte)
+            colors[zz == 1] = [220, 38, 38, 60]   # STS (Red)
+            colors[zz == 2] = [37, 99, 235, 60]   # SOS (Blue)
+
+            img = pg.ImageItem(colors, axisOrder='row-major')
+            img.setRect(QtCore.QRectF(0.0, 0.0, 1.5, 1.5))
             img.setZValue(-10)
-            img.setRect(0, 0, 1.5, 1.5)
+
+            pw = self.plot_widgets[3]
+            if self._knn_bg_item is not None:
+                pw.removeItem(self._knn_bg_item)
+            pw.addItem(img)
             self._knn_bg_item = img
-            self.plot_widgets[3].addItem(img)
+
+            # 4. 축 설정: 비율 고정을 해제하여 Y축 잘림 방지 및 0,0 원점 고정
+            pw.setAspectLocked(False) 
+            pw.getViewBox().disableAutoRange() 
+            pw.setXRange(0.0, 1.5, padding=0)
+            pw.setYRange(0.0, 1.5, padding=0)
+            pw.getAxis('left').enableAutoSIPrefix(False)
+            pw.getAxis('bottom').enableAutoSIPrefix(False)
+            pw.getViewBox().setLimits(xMin=0.0, xMax=1.5, yMin=0.0, yMax=1.5)
+            pw.setMouseEnabled(x=False, y=False)
+
         except Exception as e:
-            print(f"[KNN BG] Error: {e}")
-
-        self.plot_timer = QtCore.QTimer(self)
-        self.plot_timer.timeout.connect(self.update_all_plots)
-        self.plot_timer.start(UPDATE_INTERVAL_MS)
-
-        self._reset_runtime_buffers()
-        self._update_toggle_buttons()
+            # 에러 발생 시에만 최소한의 내용 출력
+            print(f"KNN boundary background error: {e}")
 
     def _update_toggle_buttons(self):
         logging_active = self._connection_mode == "logging"
@@ -676,7 +687,7 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(self.btn_browse_folder)
 
         top.addWidget(QtWidgets.QLabel("Output file:"))
-        default_name = "251223_cyk_assist_SOS_trial1"
+        default_name = "251223_cyk_assist3_SOS_trial1"
         self.edit_filename = QtWidgets.QLineEdit(default_name)
         self.edit_filename.setMinimumWidth(200)
         top.addWidget(self.edit_filename)
@@ -690,12 +701,11 @@ class MainWindow(QtWidgets.QMainWindow):
         grid = QtWidgets.QGridLayout()
         content.addLayout(grid, stretch=1)
         
-        # [수정] 요청된 그래프 제목 리스트
         titles = [
-            "Thigh angle",                # Graph 1
-            "Assistance torque profile",  # Graph 2
-            "T_swing at HC",              # Graph 3
-            "KNN classified gait mode"    # Graph 4
+            "Thigh angle",
+            "Assistance torque profile",
+            "T_swing at HC",
+            "KNN classified gait mode"
         ]
 
         self.plot_widgets = []
@@ -710,10 +720,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pw.getAxis("left").setTextPen("#4b5563")
             pw.setLabel("bottom", "LoopCnt")
             pw.setLabel("left", "Value")
-            
-            # [수정] 제목 설정 적용
             pw.setTitle(titles[i])
-            
             self.plot_widgets.append(pw)
             r = i // 2; c = i % 2
             grid.addWidget(pw, r, c)
@@ -736,17 +743,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_widgets[2].setYRange(0.0, 1000.0, padding=0.0)
 
         # -----------------------------------------------------------------
-        # [수정 완료] Plot 4 설정: 0~1.5 범위 고정, 1:1 비율 유지
+        # [고정] Plot 4 설정: 0~1.5 범위 고정, 1:1 비율 유지
+        # SI prefix(×0.001 같은 표시) 끄기
         # -----------------------------------------------------------------
-        self.plot_widgets[3].setLabel("bottom", "s_norm_vel_HC")
-        self.plot_widgets[3].setLabel("left", "s_norm_T_HC")
-        self.plot_widgets[3].setXRange(0.0, 1.5, padding=0.0)
-        self.plot_widgets[3].setYRange(0.0, 1.5, padding=0.0)
-        self.plot_widgets[3].setAspectLocked(True, ratio=1.0)
+        pw4 = self.plot_widgets[3]
+        pw4.setLabel("bottom", "s_norm_vel_HC")
+        pw4.setLabel("left", "s_norm_T_HC")
+
+        # 축 자동 SI prefix 비활성화: 0.3을 300m처럼 표시하지 않도록 함
+        pw4.getAxis('left').enableAutoSIPrefix(False)
+        pw4.getAxis('bottom').enableAutoSIPrefix(False)
+
+        # Plot 4 초기화: 가장 기본적인 좌표계 설정으로 복구
+        pw4.getViewBox().disableAutoRange()
+        pw4.setAspectLocked(False) # 비율 고정 해제
+        pw4.setXRange(0.0, 1.5, padding=0)
+        pw4.setYRange(0.0, 1.5, padding=0)
         
-        self.plot_widgets[3].setMouseEnabled(x=False, y=False)
-        self.plot_widgets[3].hideButtons() 
-        self.plot_widgets[3].plotItem.vb.setLimits(xMin=0, xMax=1.5, yMin=0, yMax=1.5)
+        pw4.setMouseEnabled(x=False, y=False)
+        pw4.hideButtons()
+        pw4.getViewBox().setLimits(xMin=0.0, xMax=1.5, yMin=0.0, yMax=1.5)
 
         self._hc_scatter_item = pg.ScatterPlotItem()
         self.plot_widgets[3].addItem(self._hc_scatter_item)
@@ -756,6 +772,9 @@ class MainWindow(QtWidgets.QMainWindow):
             dummy_item = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(color), pen=pg.mkPen(color))
             self._scatter_legend.addItem(dummy_item, label)
             self._scatter_legend_items.append(dummy_item)
+
+        # plot4 넘버링용 텍스트 아이템 리스트
+        self._hc_text_items = []
 
         state_box = QtWidgets.QGroupBox("States")
         state_layout = QtWidgets.QVBoxLayout(state_box)
@@ -980,10 +999,12 @@ class MainWindow(QtWidgets.QMainWindow):
             is_moving_idx = CSV_COLS.index("is_moving")
             self._set_is_moving_indicator(int(row[is_moving_idx]))
         except: pass
+        # plot4: 배경(KNN 분류 이미지)은 그대로 유지, 점 추가는 hc_count 증가 시점에만 (과거 방식과 동일)
         try:
             hc_idx = CSV_COLS.index("hc_count")
             hc_val = int(row[hc_idx])
-            if self._last_hc_count is None: self._last_hc_count = hc_val
+            if self._last_hc_count is None:
+                self._last_hc_count = hc_val
             elif hc_val > self._last_hc_count:
                 self._last_hc_count = hc_val
                 x = float(row[CSV_COLS.index("s_norm_vel_HC")])
@@ -992,11 +1013,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._hc_points_x.append(x)
                 self._hc_points_y.append(y)
                 self._hc_points_brush.append(self._gait_mode_to_brush(gm))
+                # 최근 N개만 유지
                 if SCATTER_KEEP_LAST_N > 0:
                     self._hc_points_x = self._hc_points_x[-SCATTER_KEEP_LAST_N:]
                     self._hc_points_y = self._hc_points_y[-SCATTER_KEEP_LAST_N:]
                     self._hc_points_brush = self._hc_points_brush[-SCATTER_KEEP_LAST_N:]
-        except: pass
+        except Exception:
+            pass
         try:
             v = row[self.default_idx]
             self.status_bar.showMessage(f"Recv #{self._recv_count}, LoopCnt={row[0]}, LeftHipAngle={v:.4f}")
@@ -1008,41 +1031,81 @@ class MainWindow(QtWidgets.QMainWindow):
         if not rows: return
         x_vals = [r[0] for r in rows]
 
-        for plot_idx in range(3):
+        for plot_idx in range(4):
             pw = self.plot_widgets[plot_idx]
-            group = self.plot_groups[plot_idx]
-            items = self._ts_items[plot_idx] if plot_idx < len(self._ts_items) else {}
-            for name in group:
-                try: col_idx = CSV_COLS.index(name)
-                except ValueError: continue
-                y_vals = [r[col_idx] for r in rows]
-                item = items.get(name)
-                if item is not None: item.setData(x_vals, y_vals)
-            if x_vals:
-                if pw is self.plot_widgets[3]:
-                    pw.setXRange(0.0, 1.5, padding=0.0)
-                    pw.setYRange(0.0, 1.5, padding=0.0)
-                    pw.setAspectLocked(True, ratio=1.0)
-                else:
+            if plot_idx < 3:
+                group = self.plot_groups[plot_idx]
+                items = self._ts_items[plot_idx] if plot_idx < len(self._ts_items) else {}
+                for name in group:
+                    try: col_idx = CSV_COLS.index(name)
+                    except ValueError: continue
+                    y_vals = [r[col_idx] for r in rows]
+                    item = items.get(name)
+                    if item is not None: item.setData(x_vals, y_vals)
+                if x_vals:
                     pw.setXRange(min(x_vals), max(x_vals), padding=0.01)
+            else:
+                # Plot 4: 불필요한 연산 제거 및 0~1.5 범위 유지
+                pw.getViewBox().disableAutoRange()
+                pw.setXRange(0.0, 1.5, padding=0)
+                pw.setYRange(0.0, 1.5, padding=0)
+                # 매 프레임마다 비율 고정이 다시 켜지지 않도록 함
+                pw.setAspectLocked(False)
 
         if self._hc_scatter_item is not None:
             spots = []
             total_pts = len(self._hc_points_x)
-            for idx, (x, y, br) in enumerate(zip(self._hc_points_x, self._hc_points_y, self._hc_points_brush)):
+            # 넘버링용 텍스트 모두 제거 (다시 추가)
+            for t in getattr(self, '_hc_text_items', []):
+                self.plot_widgets[3].removeItem(t)
+            self._hc_text_items = []
+            # hc_count 넘버링 추출
+            hc_counts = []
+            try:
+                hc_idx = CSV_COLS.index("hc_count")
+                # 최근 N개만 추출
+                hc_counts = [int(r[hc_idx]) for r in self.data_all[-SCATTER_KEEP_LAST_N:]]
+            except Exception:
+                hc_counts = [str(i+1) for i in range(total_pts)]
+            for idx, (x_raw, y_raw, br) in enumerate(zip(self._hc_points_x, self._hc_points_y, self._hc_points_brush)):
                 color = br.color() if isinstance(br, QtGui.QBrush) else QtGui.QColor("#6b7280")
                 is_latest = (idx == total_pts - 1)
+                # 클리핑 및 네모 처리
+                x, y = x_raw, y_raw
+                symbol = "star" if is_latest else "o"
+                clipped = False
+                if x < 0.0:
+                    x = 0.0
+                    clipped = True
+                elif x > 1.5:
+                    x = 1.5
+                    clipped = True
+                if y < 0.0:
+                    y = 0.0
+                    clipped = True
+                elif y > 1.5:
+                    y = 1.5
+                    clipped = True
+                if clipped:
+                    symbol = "s"  # 네모
                 spot = {
                     "pos": (x, y),
                     "brush": br,
                     "pen": pg.mkPen(color),
                     "size": 12 if is_latest else 8,
-                    "symbol": "star" if is_latest else "o",
-                    "text": str(idx + 1),
-                    "textColor": color,
-                    "font": QtGui.QFont("Segoe UI", 10, QtGui.QFont.Bold),
+                    "symbol": symbol,
                 }
                 spots.append(spot)
+                # 넘버링 텍스트 추가
+                if idx < len(hc_counts):
+                    text = str(hc_counts[idx])
+                else:
+                    text = str(idx+1)
+                text_item = pg.TextItem(text, color=color, anchor=(0.5, 1.2), border=None, fill=None)
+                text_item.setFont(QtGui.QFont("Segoe UI", 10, QtGui.QFont.Bold))
+                text_item.setPos(x, y)
+                self.plot_widgets[3].addItem(text_item)
+                self._hc_text_items.append(text_item)
             self._hc_scatter_item.setData(spots)
 
     @pyqtSlot(str)
