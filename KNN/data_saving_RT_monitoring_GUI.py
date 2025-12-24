@@ -493,7 +493,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """KNN 배경 이미지 생성 및 Plot 4 축 범위 강제 고정 (디버그 출력 제거 버전)"""
         try:
             # 1. KNN 데이터셋 로드 (출력 없이 로직만 수행)
-            knn_py_path = os.path.join(os.path.dirname(__file__), 'KNN_ref_dataset_251223_python.txt')
+            knn_py_path = os.path.join(os.path.dirname(__file__), 'KNN_ref_dataset_251224_python.txt')
             knn_globals = {}
             with open(knn_py_path, 'r', encoding='utf-8') as f:
                 exec(f.read(), {"np": np}, knn_globals)
