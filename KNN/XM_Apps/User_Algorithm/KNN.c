@@ -239,6 +239,8 @@ static float s_norm_T_HC = 0.0f;
 // Debug-visible raw HC feature values.
 volatile float s_vel_HC_dbg = 0.0f;
 volatile float s_T_HC_s_dbg = 0.0f;
+volatile float T_swing_SOS_ms_conf1 = 0.0f;
+volatile float T_swing_STS_ms_conf1 = 0.0f;
 
 static float s_scaling_X = 86.17f;
 static float s_scaling_Y = 0.91f;
