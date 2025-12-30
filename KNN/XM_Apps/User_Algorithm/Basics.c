@@ -13,6 +13,10 @@ void UpdateXsensImuEnable(void)
 
 void FillAndSendSavingData(void)
 {
+    // 0) latency 측정 시작 (DWT_CYCCNT 기반, us 단위)
+    // DWT_CYCCNT 활성화 필요 (초기화는 main 등에서 1회만)
+    uint32_t t_start = DWT->CYCCNT;
+
     // 1) loopCnt 채우고 증가
     SavingData.loopCnt = s_dataSaveLoopCnt++;
 
@@ -60,7 +64,8 @@ void FillAndSendSavingData(void)
     SavingData.T_swing_ms     = (float)T_swing_ms;
     SavingData.T_swing_SOS_ms = (float)T_swing_SOS_ms;
     SavingData.T_swing_STS_ms = (float)T_swing_STS_ms;
-    SavingData.T_swing_SOS_ms_conf1 = (float)T_swing_SOS_ms;
+    // latency 측정값 송신
+    SavingData.latency = 0.0f; // 기본값
     SavingData.T_swing_STS_ms_conf1 = (float)T_swing_STS_ms;
     SavingData.TswingRecording_ms   = (float)TswingRecording_ms;
     SavingData.s_vel_HC       = (float)s_vel_HC_dbg;
@@ -83,6 +88,12 @@ void FillAndSendSavingData(void)
 
     SavingData.sof = TRANSMIT_SOF;
     SavingData.len = tx_len;
+
+    // latency 측정 종료
+    uint32_t t_end = DWT->CYCCNT;
+    // STM32H7: CPU 클럭(MHz) 기준으로 us 변환
+    extern uint32_t SystemCoreClock;
+    SavingData.latency = (float)((t_end - t_start) * 1.0f / (SystemCoreClock / 1000000)); // us 단위
 
     // crc 자신을 제외한 전체에 대해 CRC 계산
     SavingData.crc = CalcCrc16((const uint8_t*)&SavingData,

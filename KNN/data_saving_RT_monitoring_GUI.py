@@ -58,19 +58,19 @@ EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 191
 ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
 
 CSV_HEADER = (
-    "LoopCnt,H10Mode,H10AssistLevel,SmartAssist,"
-    "LeftHipAngle,RightHipAngle,LeftThighAngle,RightThighAngle,"
-    "LeftHipTorque,RightHipTorque,LeftHipMotorAngle,RightHipMotorAngle,"
-    "LeftHipImuGlobalAccX,LeftHipImuGlobalAccY,LeftHipImuGlobalAccZ,"
-    "LeftHipImuGlobalGyrX,LeftHipImuGlobalGyrY,LeftHipImuGlobalGyrZ,"
-    "RightHipImuGlobalAccX,RightHipImuGlobalAccY,RightHipImuGlobalAccZ,"
-    "RightHipImuGlobalGyrX,RightHipImuGlobalGyrY,RightHipImuGlobalGyrZ,"
-    "is_moving,hc_count,R_count_upeak,L_count_upeak,R_count_dpeak,L_count_dpeak,"
-    "tau_max_setting,s_gait_mode,s_g_knn_conf,"
-    "T_swing_ms,T_swing_SOS_ms,T_swing_STS_ms,"
-    "T_swing_SOS_ms_conf1,T_swing_STS_ms_conf1,TswingRecording_ms,"
-    "s_vel_HC,s_T_HC_s,"
-    "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y,"
+    "LoopCnt,H10Mode,H10AssistLevel,SmartAssist," 
+    "LeftHipAngle,RightHipAngle,LeftThighAngle,RightThighAngle," 
+    "LeftHipTorque,RightHipTorque,LeftHipMotorAngle,RightHipMotorAngle," 
+    "LeftHipImuGlobalAccX,LeftHipImuGlobalAccY,LeftHipImuGlobalAccZ," 
+    "LeftHipImuGlobalGyrX,LeftHipImuGlobalGyrY,LeftHipImuGlobalGyrZ," 
+    "RightHipImuGlobalAccX,RightHipImuGlobalAccY,RightHipImuGlobalAccZ," 
+    "RightHipImuGlobalGyrX,RightHipImuGlobalGyrY,RightHipImuGlobalGyrZ," 
+    "is_moving,hc_count,R_count_upeak,L_count_upeak,R_count_dpeak,L_count_dpeak," 
+    "tau_max_setting,s_gait_mode,s_g_knn_conf," 
+    "T_swing_ms,T_swing_SOS_ms,T_swing_STS_ms," 
+    "latency,T_swing_STS_ms_conf1,TswingRecording_ms," 
+    "s_vel_HC,s_T_HC_s," 
+    "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y," 
     "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down"
 )
 CSV_COLS = CSV_HEADER.split(",")
@@ -166,9 +166,10 @@ def decode_packet(data_tuple):
     row[30] = int(data_tuple[base + 0])
     row[31] = int(data_tuple[base + 1])
     base = 4 + 20 + 6 + 2
-    row[32] = float(data_tuple[base])
-    base = 4 + 20 + 6 + 2 + 1
-    for i in range(17): row[33 + i] = float(data_tuple[base + i])
+    row[32] = float(data_tuple[base])  # latency
+    row[33] = float(data_tuple[base + 1])  # T_swing_STS_ms_conf1
+    base = 4 + 20 + 6 + 2 + 2
+    for i in range(16): row[34 + i] = float(data_tuple[base + i])
     return row
 
 def decode_payload_to_row(payload: bytes, last_good_row=None):
