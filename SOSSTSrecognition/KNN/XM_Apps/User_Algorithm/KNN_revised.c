@@ -115,11 +115,26 @@ volatile int tau_max_setting = 0;
  *-----------------------------------------------------------
  */
 
+typedef enum {
+  PROFILE_MODE_DYNAMIC_TWITCH = 0,
+  PROFILE_MODE_LEGACY_FVEC = 1
+} AssistProfileMode_t;
+
 /**
  *-----------------------------------------------------------
  * PUBLIC (GLOBAL) VARIABLES
  *-----------------------------------------------------------
  */
+
+/**
+ *------------------------------------------------------------
+ * STATIC (PRIVATE) FUNCTION DECLARATIONS
+ *------------------------------------------------------------
+ */
+static inline float KNN_LPF(float x, float *y_prev, float alpha);
+static inline float clampf_ud(float x, float lo, float hi);
+static inline float ComputeTwitchTorque(float t_ms, float t_rise_ms,
+                                        float tau_max);
 
 /**
  *------------------------------------------------------------
@@ -155,7 +170,6 @@ static float s_tau_out_L_old2 = 0.0f;
 static RecordingState_t s_prevRecordingState = Record_OFF;
 
 // ---- USER_DEFINED_CTRL (ported) state ----
-static float assist_level = 1.5f;
 
 static bool Rflag_assist = false;
 static bool Lflag_assist = false;
@@ -166,11 +180,24 @@ static uint32_t s_loop_count = 0;
 static float s_Rdeg[3] = {0.0f, 0.0f, 0.0f};
 static float s_Ldeg[3] = {0.0f, 0.0f, 0.0f};
 
+// --- DUAL MODE ASSIST VARIABLES ---
+volatile AssistProfileMode_t s_assist_profile_mode =
+    PROFILE_MODE_DYNAMIC_TWITCH;
+
+volatile float s_target_swing_phase_pct =
+    0.20f; // Peak at 20% of recent mean swing time
+volatile float s_current_rise_time_R_ms = 100.0f;
+volatile float s_current_rise_time_L_ms = 100.0f;
+volatile float s_t_elapsed_R_ms = 0.0f;
+volatile float s_t_elapsed_L_ms = 0.0f;
+static bool s_twitch_active_R = false;
+static bool s_twitch_active_L = false;
+static float s_twitch_tau_max_R = 0.0f;
+static float s_twitch_tau_max_L = 0.0f;
+
 // Filters (ported; timebase adjusted for CTRL_FS_HZ)
 static const float s_fs = CTRL_FS_HZ;
-static const float s_fc_theta = 20.0f;
 static const float s_alpha_theta = 0.2008486f;
-static const float s_fc_omega = 25.0f;
 static const float s_alpha_omega = 0.1357552f;
 static float s_y_prev_R = 0.0f;
 static float s_y_prev_L = 0.0f;
@@ -371,6 +398,7 @@ static void FVecDecoder_Init(void);
 static void FVecDecoder_TriggerSingle(FVecSlot_t buf[], const float f_vec[4]);
 static float FVecDecoder_StepSingle(FVecSlot_t buf[]);
 static void TriggerManuscriptFVecSingle(FVecSlot_t buf[], const float fvec[4]);
+static float ComputeTwitchTorque(float t_ms, float t_rise_ms, float tau_max);
 
 /**
  *------------------------------------------------------------
@@ -460,6 +488,8 @@ static void Standby_Entry(void) {
 static void Standby_Loop(void) {
   static float s_tau_out_R = 0.0f;
   static float s_tau_out_L = 0.0f;
+  float tau_R = 0.0f;
+  float tau_L = 0.0f;
 
   UpdateRecordingState();
   const bool recording_started =
@@ -496,7 +526,7 @@ static void Standby_Loop(void) {
 
   // Use a manual timer for long press since we don't have a direct event
   // Assume XM.status.btn[XM_BTN_3] is 1 while pressed
-  if (XM.status.h10.btn_state[XM_BTN_3]) {
+  if (XM_GetButtonState(XM_BTN_3) == XM_PRESSED) {
     s_btn3_press_timer++;
     if (s_btn3_press_timer >= 500) { // 1 second @ 500Hz
       const RecordingState_t recording_saved = Recording;
@@ -538,27 +568,49 @@ static void Standby_Loop(void) {
     TriggerManuscriptFVecSingle(s_fvec_buf_LH, fvec);
   }
 
-  float tau_R = FVecDecoder_StepSingle(s_fvec_buf_RH);
-  float tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
+  if (s_assist_profile_mode == PROFILE_MODE_DYNAMIC_TWITCH) {
+    // Dynamic Twitch Mode
+    if (s_twitch_active_R) {
+      tau_R = ComputeTwitchTorque(s_t_elapsed_R_ms, s_current_rise_time_R_ms,
+                                  s_twitch_tau_max_R);
+      s_t_elapsed_R_ms += CTRL_DT_MS;
+      // Stop twitch when it naturally decays to near zero (e.g., after
+      // 5*T_rise)
+      if (s_t_elapsed_R_ms > s_current_rise_time_R_ms * 5.0f)
+        s_twitch_active_R = false;
+    }
+    if (s_twitch_active_L) {
+      tau_L = ComputeTwitchTorque(s_t_elapsed_L_ms, s_current_rise_time_L_ms,
+                                  s_twitch_tau_max_L);
+      s_t_elapsed_L_ms += CTRL_DT_MS;
+      if (s_t_elapsed_L_ms > s_current_rise_time_L_ms * 5.0f)
+        s_twitch_active_L = false;
+    }
 
-  // Apply the same STS soft-stop shaping to the computed orders.
-  const bool r_sts = (s_gait_mode == RSTS);
-  const bool l_sts = (s_gait_mode == LSTS);
-  const float dt_s = (CTRL_DT_MS * 0.001f);
-  const float rise_time_s = 0.10f;
-  const float residual_ratio = 0.01f;
-  float T_decay_s = rise_time_s;
-  if (rise_time_s > 0.0f && residual_ratio > 0.0f && residual_ratio < 1.0f) {
-    T_decay_s = -rise_time_s / logf(residual_ratio);
+    // In Standby, we don't really actuate, but we still run the FVec step
+    // just to keep its internal buffer flowing if it was triggered, so that
+    // it functions exactly the same as before.
+    (void)FVecDecoder_StepSingle(s_fvec_buf_RH);
+    (void)FVecDecoder_StepSingle(s_fvec_buf_LH);
+  } else {
+    // Legacy FVec Mode
+    tau_R = FVecDecoder_StepSingle(s_fvec_buf_RH);
+    tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
   }
-  if (T_decay_s < dt_s)
-    T_decay_s = dt_s;
-  const float alpha = dt_s / (T_decay_s + dt_s);
 
-  const float target_R = r_sts ? 0.0f : tau_R;
-  const float target_L = l_sts ? 0.0f : tau_L;
-  s_tau_out_R = s_tau_out_R + alpha * (target_R - s_tau_out_R);
-  s_tau_out_L = s_tau_out_L + alpha * (target_L - s_tau_out_L);
+  // Instant discrete cut-off
+  const bool r_sts = s_adaptive_assist_enabled && (s_gait_mode == RSTS);
+  const bool l_sts = s_adaptive_assist_enabled && (s_gait_mode == LSTS);
+  const bool should_stop_R = r_sts || Rstop_assist;
+  const bool should_stop_L = l_sts || Lstop_assist;
+
+  const float target_R = should_stop_R ? 0.0f : tau_R;
+  const float target_L = should_stop_L ? 0.0f : tau_L;
+
+  // Directly apply the torque without any LPF smoothing to ensure discrete
+  // drop.
+  s_tau_out_R = target_R;
+  s_tau_out_L = target_L;
 
   s_tau_cmd_R = s_tau_out_R;
   s_tau_cmd_L = s_tau_out_L;
@@ -606,7 +658,7 @@ static void Active_Loop(void) {
     s_adaptive_assist_enabled = !s_adaptive_assist_enabled;
   }
 
-  if (XM.status.h10.btn_state[XM_BTN_3]) {
+  if (XM_GetButtonState(XM_BTN_3) == XM_PRESSED) {
     s_btn3_press_timer++;
     if (s_btn3_press_timer >= 500) { // 1 second @ 500Hz
       const RecordingState_t recording_saved = Recording;
@@ -646,17 +698,33 @@ static void Active_Loop(void) {
   if (s_transition_trigger_R || s_transition_trigger_L) {
     if (s_transition_trigger_R) {
       FVecDecoder_InitSingle(s_fvec_buf_RH);
-      s_tau_out_R = 0.0f;
-      s_tau_cmd_R = 0.0f;
-      XM_SetAssistTorqueRH(0.0f);
+      // Removed instant zeroing to prevent discrete drop:
+      // s_tau_out_R = 0.0f;
+      // s_tau_cmd_R = 0.0f;
+      // XM_SetAssistTorqueRH(0.0f);
       trig_R = true; // lower peak 때와 동일하게 트리거 경로로 연결
+
+      // Dynamic Twitch Trigger
+      s_t_elapsed_R_ms = 0.0f;
+      s_current_rise_time_R_ms = clampf_ud(
+          s_swing_period_ms * s_target_swing_phase_pct, 50.0f, 300.0f);
+      s_twitch_active_R = true;
+      s_twitch_tau_max_R = Rstop_assist ? 0.0f : (float)tau_max_setting;
     }
     if (s_transition_trigger_L) {
       FVecDecoder_InitSingle(s_fvec_buf_LH);
-      s_tau_out_L = 0.0f;
-      s_tau_cmd_L = 0.0f;
-      XM_SetAssistTorqueLH(0.0f);
+      // Removed instant zeroing to prevent discrete drop:
+      // s_tau_out_L = 0.0f;
+      // s_tau_cmd_L = 0.0f;
+      // XM_SetAssistTorqueLH(0.0f);
       trig_L = true;
+
+      // Dynamic Twitch Trigger
+      s_t_elapsed_L_ms = 0.0f;
+      s_current_rise_time_L_ms = clampf_ud(
+          s_swing_period_ms * s_target_swing_phase_pct, 50.0f, 300.0f);
+      s_twitch_active_L = true;
+      s_twitch_tau_max_L = Lstop_assist ? 0.0f : (float)tau_max_setting;
     }
     s_transition_trigger_R = false;
     s_transition_trigger_L = false;
@@ -673,35 +741,65 @@ static void Active_Loop(void) {
     TriggerManuscriptFVecSingle(s_fvec_buf_LH, fvec);
   }
 
-  float tau_R = FVecDecoder_StepSingle(s_fvec_buf_RH);
-  float tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
+  float tau_R = 0.0f;
+  float tau_L = 0.0f;
 
-  // Mode 0 IIR coefficients for Soft-stop decay
-  const float b1 = kFVecModeParam[0].b1;
-  const float b2 = kFVecModeParam[0].b2;
+  // Unified Soft-stop logic
+  const bool r_sts = s_adaptive_assist_enabled && (s_gait_mode == RSTS);
+  const bool l_sts = s_adaptive_assist_enabled && (s_gait_mode == LSTS);
+  const bool should_stop_R = r_sts || Rstop_assist;
+  const bool should_stop_L = l_sts || Lstop_assist;
 
-  // Output logic with Soft-stop (using Mode 0 b1, b2 coefficients)
-  if (Rstop_assist) {
-    // Apply Mode 0 decay to the current output
-    float tau_decay = b1 * s_tau_out_R_old1 + b2 * s_tau_out_R_old2;
-    s_tau_out_R = tau_decay;
+  if (s_assist_profile_mode == PROFILE_MODE_DYNAMIC_TWITCH) {
+    // Dynamic Twitch Mode
+    if (s_twitch_active_R) {
+      if (should_stop_R) {
+        s_twitch_active_R =
+            false; // Cancel twitch profile generation immediately if stopped
+        tau_R = 0.0f;
+      } else {
+        tau_R = ComputeTwitchTorque(s_t_elapsed_R_ms, s_current_rise_time_R_ms,
+                                    s_twitch_tau_max_R);
+        s_t_elapsed_R_ms += CTRL_DT_MS;
+        if (s_t_elapsed_R_ms > s_current_rise_time_R_ms * 5.0f)
+          s_twitch_active_R = false;
+      }
+    }
+    if (s_twitch_active_L) {
+      if (should_stop_L) {
+        s_twitch_active_L = false;
+        tau_L = 0.0f;
+      } else {
+        tau_L = ComputeTwitchTorque(s_t_elapsed_L_ms, s_current_rise_time_L_ms,
+                                    s_twitch_tau_max_L);
+        s_t_elapsed_L_ms += CTRL_DT_MS;
+        if (s_t_elapsed_L_ms > s_current_rise_time_L_ms * 5.0f)
+          s_twitch_active_L = false;
+      }
+    }
+
+    // Maintain FVec state silently
+    (void)FVecDecoder_StepSingle(s_fvec_buf_RH);
+    (void)FVecDecoder_StepSingle(s_fvec_buf_LH);
   } else {
-    // Direct output for crisp rise time (Mode 0)
-    s_tau_out_R = tau_R;
+    // Mode 1: Legacy FVec
+    tau_R = FVecDecoder_StepSingle(s_fvec_buf_RH);
+    tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
   }
 
-  if (Lstop_assist) {
-    float tau_decay = b1 * s_tau_out_L_old1 + b2 * s_tau_out_L_old2;
-    s_tau_out_L = tau_decay;
-  } else {
-    s_tau_out_L = tau_L;
-  }
+  // Instant discrete cut-off
+  const bool r_sts_final = s_adaptive_assist_enabled && (s_gait_mode == RSTS);
+  const bool l_sts_final = s_adaptive_assist_enabled && (s_gait_mode == LSTS);
+  const bool should_stop_R_final = r_sts_final || Rstop_assist;
+  const bool should_stop_L_final = l_sts_final || Lstop_assist;
 
-  // Update old values for next loop decay
-  s_tau_out_R_old2 = s_tau_out_R_old1;
-  s_tau_out_R_old1 = s_tau_out_R;
-  s_tau_out_L_old2 = s_tau_out_L_old1;
-  s_tau_out_L_old1 = s_tau_out_L;
+  const float target_R = should_stop_R_final ? 0.0f : tau_R;
+  const float target_L = should_stop_L_final ? 0.0f : tau_L;
+
+  // Directly apply the torque without any LPF smoothing to ensure discrete
+  // drop.
+  s_tau_out_R = target_R;
+  s_tau_out_L = target_L;
 
   // Actuate in ACTIVE
   XM_SetAssistTorqueRH(s_tau_out_R);
@@ -725,6 +823,15 @@ static inline float clampf_ud(float x, float lo, float hi) {
   if (x > hi)
     return hi;
   return x;
+}
+
+static inline float ComputeTwitchTorque(float t_ms, float t_rise_ms,
+                                        float tau_max) {
+  if (t_ms <= 0.0f || t_rise_ms <= 0.0f)
+    return 0.0f;
+  // y(t) = tau_max * (t/T) * exp(1 - t/T)
+  const float x = t_ms / t_rise_ms;
+  return tau_max * x * expf(1.0f - x);
 }
 
 static inline void HC_UpdateDegThresh_OnSTS(float swing_deg_meas) {
@@ -1339,11 +1446,27 @@ static void adaptive_assist(const GaitRecognitionResult_t *rec,
       if (out_trig_R)
         *out_trig_R = true;
       Rflag_assist = false;
+
+      // Dynamic mode setup
+      s_t_elapsed_R_ms = 0.0f;
+      // Map current scaling phase into actual rise time explicitly
+      s_current_rise_time_R_ms = clampf_ud(
+          s_swing_period_ms * s_target_swing_phase_pct, 50.0f, 300.0f);
+      s_twitch_active_R = (tau_max_setting > 0 && !r_stop);
+      s_twitch_tau_max_R = r_stop ? 0.0f : (float)tau_max_setting;
     }
     if (rec->l_uprise_after_lower) {
       if (out_trig_L)
         *out_trig_L = true;
       Lflag_assist = false;
+
+      // Dynamic mode setup
+      s_t_elapsed_L_ms = 0.0f;
+      // Map current scaling phase into actual rise time explicitly
+      s_current_rise_time_L_ms = clampf_ud(
+          s_swing_period_ms * s_target_swing_phase_pct, 50.0f, 300.0f);
+      s_twitch_active_L = (tau_max_setting > 0 && !l_stop);
+      s_twitch_tau_max_L = l_stop ? 0.0f : (float)tau_max_setting;
     }
   }
 
@@ -1370,6 +1493,11 @@ static void ResetUserState(void) {
   Lflag_assist = false;
   Rstop_assist = false;
   Lstop_assist = false;
+
+  s_t_elapsed_R_ms = 0.0f;
+  s_t_elapsed_L_ms = 0.0f;
+  s_twitch_active_R = false;
+  s_twitch_active_L = false;
 
   s_loop_count = 0;
 
