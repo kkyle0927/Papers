@@ -957,7 +957,7 @@ static int knn_2label_majority_ud(const float (*xy)[2], int n, int split,
 
 static int update_standing_moving_flag_w_ud(float wR_metric, float wL_metric) {
   const float V_ON_THRESH = 40.0f;
-  const float V_OFF_THRESH = 10.0f;
+  const float V_OFF_THRESH = 7.0f;  // lowered from 10.0: eliminates false MOVING->STANDING during slow walking
   const int ON_HOLD_TICKS = 10;
   const int OFF_HOLD_TICKS = 50;
 
