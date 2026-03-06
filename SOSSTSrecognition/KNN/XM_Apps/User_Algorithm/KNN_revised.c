@@ -159,7 +159,7 @@ RecordingState_t Recording = Record_OFF;
 SmartAssist_t SmartAssist = SmartAssist_OFF;
 
 bool xsensIMUenableRes = false;
-static bool s_adaptive_assist_enabled = false;
+bool s_adaptive_assist_enabled = false;
 static uint32_t s_btn3_press_timer = 0;
 
 static float s_tau_out_R_old1 = 0.0f;

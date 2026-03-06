@@ -86,6 +86,10 @@ typedef struct __attribute__((packed)) {
     float s_thres_up;
     float s_thres_down;
 
+    float   s_tau_cmd_R;
+    float   s_tau_cmd_L;
+    uint8_t adaptive_assist_enabled;
+
     uint16_t crc;
 } SavingData_t;
 
@@ -101,13 +105,13 @@ typedef struct __attribute__((packed)) {
     #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
     _Static_assert(offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc) == sizeof(SavingData_t),
                    "SavingData_t layout error: 'crc' must be the last field");
-    _Static_assert(sizeof(SavingData_t) == 191,
+    _Static_assert(sizeof(SavingData_t) == 200,
                    "SavingData_t size mismatch: update host parser struct");
     #else
     typedef char SavingData_t_crc_must_be_last[
         ((offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc)) == sizeof(SavingData_t)) ? 1 : -1
     ];
-    typedef char SavingData_t_size_must_match[(sizeof(SavingData_t) == 191) ? 1 : -1];
+    typedef char SavingData_t_size_must_match[(sizeof(SavingData_t) == 200) ? 1 : -1];
     #endif
 #endif
 
@@ -154,6 +158,13 @@ extern volatile float s_dbg_norm_vel_HC;
 extern volatile float s_dbg_norm_T_HC;
 extern volatile float s_dbg_scaling_X;
 extern volatile float s_dbg_scaling_Y;
+
+// From KNN.c (torque command values)
+extern volatile float s_tau_cmd_R;
+extern volatile float s_tau_cmd_L;
+
+// From KNN.c (adaptive assist enable flag)
+extern bool s_adaptive_assist_enabled;
 
 // From KNN.c (adaptive parameters; expose via volatile mirrors for telemetry)
 extern volatile float s_dbg_t_gap_R_ms;

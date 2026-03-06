@@ -82,6 +82,10 @@ void FillAndSendSavingData(void)
     SavingData.s_thres_up      = (float)s_dbg_thres_up;
     SavingData.s_thres_down    = (float)s_dbg_thres_down;
 
+    SavingData.s_tau_cmd_R             = (float)s_tau_cmd_R;
+    SavingData.s_tau_cmd_L             = (float)s_tau_cmd_L;
+    SavingData.adaptive_assist_enabled = (uint8_t)s_adaptive_assist_enabled;
+
     // 3) 헤더/CRC 설정
     // NOTE: 'len' MUST match the actual transmitted byte count.
     const uint16_t tx_len = (uint16_t)sizeof(SavingData_t);

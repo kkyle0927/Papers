@@ -51,10 +51,10 @@ SOF_VALUE = 0xAA55
 SOF_BYTES_LE = b"\x55\xAA"
 
 ## Firmware SavingData_t (packed) payload schema:
-STRUCT_FMT = '<IBBB20f6iBBf17f'
+STRUCT_FMT = '<IBBB20f6iBBf17fffB'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
-EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 191
+EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 200
 ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
 
 CSV_HEADER = (
@@ -71,7 +71,8 @@ CSV_HEADER = (
     "latency,T_swing_STS_ms_conf1,TswingRecording_ms," 
     "s_vel_HC,s_T_HC_s," 
     "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y," 
-    "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down"
+    "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down,"
+    "s_tau_cmd_R,s_tau_cmd_L,adaptive_assist_enabled"
 )
 CSV_COLS = CSV_HEADER.split(",")
 
@@ -79,7 +80,7 @@ CSV_COLS = CSV_HEADER.split(",")
 def make_missing_row(loop_cnt: int, last_row=None):
     row = [float("nan")] * len(CSV_COLS)
     row[0] = int(loop_cnt)
-    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31}
+    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31, 52}
     if last_row is None:
         for idx in int_indices:
             if idx == 0: continue
@@ -151,7 +152,7 @@ def crc16_modbus(data: bytes, init_val: int = 0xFFFF) -> int:
     return crc
 
 def decode_packet(data_tuple):
-    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 17
+    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 17 + 2 + 1
     if len(data_tuple) != expected_elems:
         raise ValueError(f"Unexpected data length: {len(data_tuple)}")
     row = [0] * len(CSV_COLS)
@@ -170,6 +171,10 @@ def decode_packet(data_tuple):
     row[33] = float(data_tuple[base + 1])  # T_swing_STS_ms_conf1
     base = 4 + 20 + 6 + 2 + 2
     for i in range(16): row[34 + i] = float(data_tuple[base + i])
+    base_new = 4 + 20 + 6 + 2 + 2 + 16  # = 50
+    row[50] = float(data_tuple[base_new])      # s_tau_cmd_R
+    row[51] = float(data_tuple[base_new + 1])  # s_tau_cmd_L
+    row[52] = int(data_tuple[base_new + 2])    # adaptive_assist_enabled
     return row
 
 def decode_payload_to_row(payload: bytes, last_good_row=None):
@@ -177,7 +182,7 @@ def decode_payload_to_row(payload: bytes, last_good_row=None):
     return decode_packet(data_tuple)
 
 def row_to_csv_line(row):
-    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31}
+    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31, 52}
     parts = []
     for idx, val in enumerate(row):
         if idx in int_indices: parts.append(str(int(val)))
@@ -469,6 +474,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_plot_groups()
         self.state_labels = {}
         self.is_moving_indicator = None
+        self.adaptive_indicator = None
         self.debug_label = None
         self._last_rx_len = None
         self._recent_err_summary = None
@@ -604,6 +610,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sanity_error_label.setText("Sanity errors: 0")
         if self.is_moving_indicator is not None:
             self._set_is_moving_indicator(0)
+        if self.adaptive_indicator is not None:
+            self._set_adaptive_indicator(0)
         for key, lbl in self.state_labels.items():
             lbl.setText(f"{key}: -")
         self.status_bar.showMessage("Ready")
@@ -638,6 +646,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.is_moving_indicator.setStyleSheet("color: #2563eb;")
         else:
             self.is_moving_indicator.setStyleSheet("color: #dc2626;")
+
+    def _set_adaptive_indicator(self, val: int):
+        if self.adaptive_indicator is None: return
+        if int(val) != 0:
+            self.adaptive_indicator.setStyleSheet("color: #16a34a;")
+        else:
+            self.adaptive_indicator.setStyleSheet("color: #9ca3af;")
 
     def _gait_mode_to_brush(self, gait_mode: int) -> QtGui.QBrush:
         gm = int(gait_mode)
@@ -809,6 +824,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.is_moving_indicator.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         moving_row.addWidget(self.is_moving_indicator); moving_row.addStretch()
         state_layout.addLayout(moving_row)
+
+        adaptive_row = QtWidgets.QHBoxLayout(); adaptive_row.setSpacing(10)
+        adaptive_row.addWidget(QtWidgets.QLabel("Adaptive:"))
+        self.adaptive_indicator = QtWidgets.QLabel("●")
+        self.adaptive_indicator.setFont(ind_font)
+        self.adaptive_indicator.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        adaptive_row.addWidget(self.adaptive_indicator); adaptive_row.addStretch()
+        state_layout.addLayout(adaptive_row)
 
         for key in ("h10Mode", "tau_max_setting", "s_scaling_X", "s_scaling_Y", "hc_count"):
             lbl = QtWidgets.QLabel(f"{key}: -")
@@ -999,6 +1022,10 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             is_moving_idx = CSV_COLS.index("is_moving")
             self._set_is_moving_indicator(int(row[is_moving_idx]))
+        except: pass
+        try:
+            adap_idx = CSV_COLS.index("adaptive_assist_enabled")
+            self._set_adaptive_indicator(int(row[adap_idx]))
         except: pass
         # plot4: 배경(KNN 분류 이미지)은 그대로 유지, 점 추가는 hc_count 증가 시점에만 (과거 방식과 동일)
         try:
