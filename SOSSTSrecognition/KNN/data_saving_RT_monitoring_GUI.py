@@ -51,10 +51,10 @@ SOF_VALUE = 0xAA55
 SOF_BYTES_LE = b"\x55\xAA"
 
 ## Firmware SavingData_t (packed) payload schema:
-STRUCT_FMT = '<IBBB20f6iBBf17fffB'
+STRUCT_FMT = '<IBBB20f6iBBf17fffffB'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
-EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 200
+EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 208
 ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
 
 CSV_HEADER = (
@@ -72,7 +72,8 @@ CSV_HEADER = (
     "s_vel_HC,s_T_HC_s," 
     "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y," 
     "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down,"
-    "s_tau_cmd_R,s_tau_cmd_L,adaptive_assist_enabled"
+    "s_tau_cmd_R,s_tau_cmd_L,adaptive_assist_enabled,"
+    "swing_phase_RT_R,swing_phase_RT_L"
 )
 CSV_COLS = CSV_HEADER.split(",")
 
@@ -175,6 +176,8 @@ def decode_packet(data_tuple):
     row[50] = float(data_tuple[base_new])      # s_tau_cmd_R
     row[51] = float(data_tuple[base_new + 1])  # s_tau_cmd_L
     row[52] = int(data_tuple[base_new + 2])    # adaptive_assist_enabled
+    row[53] = float(data_tuple[base_new + 3])  # swing_phase_RT_R
+    row[54] = float(data_tuple[base_new + 4])  # swing_phase_RT_L
     return row
 
 def decode_payload_to_row(payload: bytes, last_good_row=None):
@@ -389,7 +392,7 @@ class CsvReviewDialog(QtWidgets.QDialog):
             ["LeftHipMotorAngle","RightHipMotorAngle","LeftThighAngle","RightThighAngle"],
             ["s_g_knn_conf","s_scaling_X","s_scaling_Y"],
             ["TswingRecording_ms","T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms"],
-            ["is_moving","hc_count","R_count_upeak","L_count_upeak"],
+            ["is_moving","hc_count","swing_phase_RT_R","swing_phase_RT_L"],
             ["tau_max_setting","s_gait_mode","s_g_knn_conf", "s_vel_HC","s_T_HC_s","s_norm_vel_HC","s_norm_T_HC"],
         ]
         self.col_index = {name: i for i, name in enumerate(CSV_COLS)}
@@ -616,6 +619,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lbl.setText(f"{key}: -")
         self.status_bar.showMessage("Ready")
 
+
     def _ensure_csv_extension(self, filename: str) -> str:
         name = (filename or "").strip()
         if not name: return ""
@@ -664,7 +668,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_plot_groups(self):
         g1 = ["LeftThighAngle", "RightThighAngle"]
         g2 = ["LeftHipTorque", "RightHipTorque"]
-        g3 = ["TswingRecording_ms"]
+        g3 = ["swing_phase_RT_R", "swing_phase_RT_L"]
         g4 = []
         self.plot_groups = [g1, g2, g3, g4]
 
@@ -720,7 +724,7 @@ class MainWindow(QtWidgets.QMainWindow):
         titles = [
             "Thigh angle",
             "Assistance torque profile",
-            "T_swing at HC",
+            "Swing phase (%)",
             "KNN classified gait mode"
         ]
 
@@ -756,7 +760,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.plot_widgets[0].setYRange(-30.0, 90.0, padding=0.0)
         self.plot_widgets[1].setYRange(-1.0, 5.0, padding=0.0)
-        self.plot_widgets[2].setYRange(0.0, 1000.0, padding=0.0)
+        self.plot_widgets[2].setYRange(0.0, 110.0, padding=0.0)
 
         # -----------------------------------------------------------------
         # [고정] Plot 4 설정: 0~1.5 범위 고정, 1:1 비율 유지

@@ -1,96 +1,101 @@
 #ifndef BASICS_H
 #define BASICS_H
 
-#include "xm_api.h"
 #include "mti-630.h"
-#include <stdint.h>
+#include "xm_api.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+
 
 /* --- 공통 enum / struct --- */
 typedef enum {
-    Record_OFF,
-    Record_ON,
+  Record_OFF,
+  Record_ON,
 } RecordingState_t;
 
 typedef enum {
-    Enable_OFF,
-    Enable_ON,
+  Enable_OFF,
+  Enable_ON,
 } Enable_t;
 
 typedef enum {
-    SmartAssist_OFF,
-    SmartAssist_ON,
+  SmartAssist_OFF,
+  SmartAssist_ON,
 } SmartAssist_t;
 
 typedef enum {
-    NONE = 0,
-    RSOS = 1,
-    RSTS = 2,
-    LSOS = 3,
-    LSTS = 4,
+  NONE = 0,
+  RSOS = 1,
+  RSTS = 2,
+  LSOS = 3,
+  LSTS = 4,
 } GaitMode_t;
 
 typedef struct __attribute__((packed)) {
-    uint16_t sof;
-    uint16_t len;
+  uint16_t sof;
+  uint16_t len;
 
-    uint32_t loopCnt;
-    uint8_t  h10Mode;
-    uint8_t  h10AssistLevel;
-    uint8_t  SmartAssist;
+  uint32_t loopCnt;
+  uint8_t h10Mode;
+  uint8_t h10AssistLevel;
+  uint8_t SmartAssist;
 
-    float leftHipAngle,  rightHipAngle;
-    float leftThighAngle, rightThighAngle;
+  float leftHipAngle, rightHipAngle;
+  float leftThighAngle, rightThighAngle;
 
-    float leftHipTorque,  rightHipTorque;
-    float leftHipMotorAngle, rightHipMotorAngle;
+  float leftHipTorque, rightHipTorque;
+  float leftHipMotorAngle, rightHipMotorAngle;
 
-    float leftHipImuGlobalAccX, leftHipImuGlobalAccY, leftHipImuGlobalAccZ;
-    float leftHipImuGlobalGyrX, leftHipImuGlobalGyrY, leftHipImuGlobalGyrZ;
-    float rightHipImuGlobalAccX, rightHipImuGlobalAccY, rightHipImuGlobalAccZ;
-    float rightHipImuGlobalGyrX, rightHipImuGlobalGyrY, rightHipImuGlobalGyrZ;
+  float leftHipImuGlobalAccX, leftHipImuGlobalAccY, leftHipImuGlobalAccZ;
+  float leftHipImuGlobalGyrX, leftHipImuGlobalGyrY, leftHipImuGlobalGyrZ;
+  float rightHipImuGlobalAccX, rightHipImuGlobalAccY, rightHipImuGlobalAccZ;
+  float rightHipImuGlobalGyrX, rightHipImuGlobalGyrY, rightHipImuGlobalGyrZ;
 
-    int32_t is_moving;
-    int32_t hc_count;
+  int32_t is_moving;
+  int32_t hc_count;
 
-    int32_t R_count_upeak;
-    int32_t L_count_upeak;
-    int32_t R_count_dpeak;
-    int32_t L_count_dpeak;
+  int32_t R_count_upeak;
+  int32_t L_count_upeak;
+  int32_t R_count_dpeak;
+  int32_t L_count_dpeak;
 
-    uint8_t tau_max_setting;
+  uint8_t tau_max_setting;
 
-    uint8_t s_gait_mode;
-    float   s_g_knn_conf;
+  uint8_t s_gait_mode;
+  float s_g_knn_conf;
 
-    // KNN normalization / cycle period (debug/analysis)
-    float T_swing_ms;
-    float T_swing_SOS_ms;
-    float T_swing_STS_ms;
-    // Most recent swing times whose KNN confidence was exactly 1.0 (used for normalization).
-    float latency;
-    float T_swing_STS_ms_conf1;
-    float TswingRecording_ms;
-    float s_vel_HC;
-    float s_T_HC_s;
-    float s_norm_vel_HC;
-    float s_norm_T_HC;
-    float s_scaling_X;
-    float s_scaling_Y;
+  // KNN normalization / cycle period (debug/analysis)
+  float T_swing_ms;
+  float T_swing_SOS_ms;
+  float T_swing_STS_ms;
+  // Most recent swing times whose KNN confidence was exactly 1.0 (used for
+  // normalization).
+  float latency;
+  float T_swing_STS_ms_conf1;
+  float TswingRecording_ms;
+  float s_vel_HC;
+  float s_T_HC_s;
+  float s_norm_vel_HC;
+  float s_norm_T_HC;
+  float s_scaling_X;
+  float s_scaling_Y;
 
-    // Adaptive parameters (debug/analysis)
-    float s_t_gap_R_ms;
-    float s_t_gap_L_ms;
-    float s_hc_deg_thresh;
-    float s_thres_up;
-    float s_thres_down;
+  // Adaptive parameters (debug/analysis)
+  float s_t_gap_R_ms;
+  float s_t_gap_L_ms;
+  float s_hc_deg_thresh;
+  float s_thres_up;
+  float s_thres_down;
 
-    float   s_tau_cmd_R;
-    float   s_tau_cmd_L;
-    uint8_t adaptive_assist_enabled;
+  float s_tau_cmd_R;
+  float s_tau_cmd_L;
+  uint8_t adaptive_assist_enabled;
 
-    uint16_t crc;
+  float swing_phase_RT_R;
+  float swing_phase_RT_L;
+
+  uint16_t crc;
 } SavingData_t;
 
 // Wire-format safety checks:
@@ -102,22 +107,27 @@ typedef struct __attribute__((packed)) {
 #endif
 
 #ifdef PACKING_ASSERTS_ENABLED
-    #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-    _Static_assert(offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc) == sizeof(SavingData_t),
-                   "SavingData_t layout error: 'crc' must be the last field");
-    _Static_assert(sizeof(SavingData_t) == 200,
-                   "SavingData_t size mismatch: update host parser struct");
-    #else
-    typedef char SavingData_t_crc_must_be_last[
-        ((offsetof(SavingData_t, crc) + sizeof(((SavingData_t*)0)->crc)) == sizeof(SavingData_t)) ? 1 : -1
-    ];
-    typedef char SavingData_t_size_must_match[(sizeof(SavingData_t) == 200) ? 1 : -1];
-    #endif
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(offsetof(SavingData_t, crc) + sizeof(((SavingData_t *)0)->crc) ==
+                   sizeof(SavingData_t),
+               "SavingData_t layout error: 'crc' must be the last field");
+_Static_assert(sizeof(SavingData_t) == 208,
+               "SavingData_t size mismatch: update host parser struct");
+#else
+typedef char
+    SavingData_t_crc_must_be_last[((offsetof(SavingData_t, crc) +
+                                    sizeof(((SavingData_t *)0)->crc)) ==
+                                   sizeof(SavingData_t))
+                                      ? 1
+                                      : -1];
+typedef char
+    SavingData_t_size_must_match[(sizeof(SavingData_t) == 208) ? 1 : -1];
+#endif
 #endif
 
 /* --- 공유 전역 변수 extern --- */
-extern uint32_t      s_dataSaveLoopCnt;
-extern SavingData_t  SavingData;
+extern uint32_t s_dataSaveLoopCnt;
+extern SavingData_t SavingData;
 extern XmLogicLevel_t sync_signal;
 extern XmLogicLevel_t sync_signal_pre;
 
@@ -126,7 +136,7 @@ extern XmBtnEvent_t XM_button2;
 extern XmBtnEvent_t XM_button3;
 
 extern RecordingState_t Recording;
-extern SmartAssist_t   SmartAssist;
+extern SmartAssist_t SmartAssist;
 
 extern bool xsensIMUenableRes;
 
@@ -173,13 +183,17 @@ extern volatile float s_dbg_hc_deg_thresh;
 extern volatile float s_dbg_thres_up;
 extern volatile float s_dbg_thres_down;
 
-#define TRANSMIT_SOF  (0xAA55u)
+// From KNN.c (real-time swing phase calculation)
+extern volatile float swing_phase_RT_R;
+extern volatile float swing_phase_RT_L;
+
+#define TRANSMIT_SOF (0xAA55u)
 
 /* --- 함수 프로토타입 --- */
-void     UpdateXsensImuEnable(void);
-void     FillAndSendSavingData(void);
-uint16_t CalcCrc16(const uint8_t* data, uint32_t length);
-void     UpdateRecordingState(void);
-void     UpdateSmartAssistState(void);
+void UpdateXsensImuEnable(void);
+void FillAndSendSavingData(void);
+uint16_t CalcCrc16(const uint8_t *data, uint32_t length);
+void UpdateRecordingState(void);
+void UpdateSmartAssistState(void);
 
 #endif /* BASICS_H */
