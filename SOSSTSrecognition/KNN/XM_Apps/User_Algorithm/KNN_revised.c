@@ -207,9 +207,8 @@ static float s_trap_tau_max_L = 0.0f;
 volatile float swing_phase_RT_R = 0.0f;
 volatile float swing_phase_RT_L = 0.0f;
 
-// Reference periods for current swing
-static float s_prev_swing_ms_R = 400.0f;
-static float s_prev_swing_ms_L = 400.0f;
+// Reference periods for current swing (shared between L and R)
+static float s_prev_swing_ms = 400.0f;
 static float s_current_swing_period_R_ms = 400.0f;
 static float s_current_swing_period_L_ms = 400.0f;
 
@@ -635,19 +634,9 @@ static void Standby_Loop(void) {
     tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
   }
 
-  // Instant discrete cut-off
-  const bool r_sts = s_adaptive_assist_enabled && (s_gait_mode == RSTS);
-  const bool l_sts = s_adaptive_assist_enabled && (s_gait_mode == LSTS);
-  const bool should_stop_R = r_sts || Rstop_assist;
-  const bool should_stop_L = l_sts || Lstop_assist;
-
-  const float target_R = should_stop_R ? 0.0f : tau_R;
-  const float target_L = should_stop_L ? 0.0f : tau_L;
-
-  // Directly apply the torque without any LPF smoothing to ensure discrete
-  // drop.
-  s_tau_out_R = target_R;
-  s_tau_out_L = target_L;
+  // Standby doesn't actuate, tau_out is for debug/telemetry only
+  s_tau_out_R = tau_R;
+  s_tau_out_L = tau_L;
 
   s_tau_cmd_R = s_tau_out_R;
   s_tau_cmd_L = s_tau_out_L;
@@ -742,20 +731,24 @@ static void Active_Loop(void) {
       trig_R = true; // lower peak 때와 동일하게 트리거 경로로 연결
 
       // Dynamic Trapezoidal Trigger (Transition)
+      const float TAU_NM_PER_LEVEL = 1.0f; // Scale 0-7 levels to actual Nm
       s_t_elapsed_R_ms = 0.0f;
-      s_current_swing_period_R_ms = s_prev_swing_ms_R;
+      s_current_swing_period_R_ms = s_prev_swing_ms;
       s_trap_active_R = true;
-      s_trap_tau_max_R = Rstop_assist ? 0.0f : (float)tau_max_setting;
+      s_trap_tau_max_R =
+          Rstop_assist ? 0.0f : ((float)tau_max_setting * TAU_NM_PER_LEVEL);
     }
     if (s_transition_trigger_L) {
       FVecDecoder_InitSingle(s_fvec_buf_LH);
       trig_L = true;
 
       // Dynamic Trapezoidal Trigger (Transition)
+      const float TAU_NM_PER_LEVEL = 1.0f; // Scale 0-7 levels to actual Nm
       s_t_elapsed_L_ms = 0.0f;
-      s_current_swing_period_L_ms = s_prev_swing_ms_L;
+      s_current_swing_period_L_ms = s_prev_swing_ms;
       s_trap_active_L = true;
-      s_trap_tau_max_L = Lstop_assist ? 0.0f : (float)tau_max_setting;
+      s_trap_tau_max_L =
+          Lstop_assist ? 0.0f : ((float)tau_max_setting * TAU_NM_PER_LEVEL);
     }
 
     s_transition_trigger_R = false;
@@ -776,54 +769,36 @@ static void Active_Loop(void) {
   float tau_R = 0.0f;
   float tau_L = 0.0f;
 
-  // Unified Soft-stop logic
-  const bool r_sts = s_adaptive_assist_enabled && (s_gait_mode == RSTS);
-  const bool l_sts = s_adaptive_assist_enabled && (s_gait_mode == LSTS);
-  const bool should_stop_R = r_sts || Rstop_assist;
-  const bool should_stop_L = l_sts || Lstop_assist;
-
   if (s_assist_profile_mode == PROFILE_MODE_DYNAMIC_TWITCH) {
     // Dynamic Trapezoidal Mode
     if (s_trap_active_R) {
-      if (should_stop_R) {
-        s_trap_active_R = false;
-        tau_R = 0.0f;
-        swing_phase_RT_R = 0.0f;
-      } else {
-        tau_R = ComputeTrapezoidalTorque(
-            s_t_elapsed_R_ms, s_current_swing_period_R_ms, s_trap_tau_max_R);
-        swing_phase_RT_R =
-            (s_t_elapsed_R_ms / s_current_swing_period_R_ms) * 100.0f;
-        s_t_elapsed_R_ms += CTRL_DT_MS;
+      tau_R = ComputeTrapezoidalTorque(
+          s_t_elapsed_R_ms, s_current_swing_period_R_ms, s_trap_tau_max_R);
+      swing_phase_RT_R =
+          (s_t_elapsed_R_ms / s_current_swing_period_R_ms) * 100.0f;
+      s_t_elapsed_R_ms += CTRL_DT_MS;
 
-        float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
-                              s_trap_plat_pct + s_trap_fall_pct;
-        if (s_t_elapsed_R_ms > s_current_swing_period_R_ms * total_dur_pct) {
-          s_trap_active_R = false;
-          swing_phase_RT_R = 0.0f;
-        }
+      float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
+                            s_trap_plat_pct + s_trap_fall_pct;
+      if (s_t_elapsed_R_ms > s_current_swing_period_R_ms * total_dur_pct) {
+        s_trap_active_R = false;
+        swing_phase_RT_R = 0.0f;
       }
     } else {
       swing_phase_RT_R = 0.0f;
     }
     if (s_trap_active_L) {
-      if (should_stop_L) {
-        s_trap_active_L = false;
-        tau_L = 0.0f;
-        swing_phase_RT_L = 0.0f;
-      } else {
-        tau_L = ComputeTrapezoidalTorque(
-            s_t_elapsed_L_ms, s_current_swing_period_L_ms, s_trap_tau_max_L);
-        swing_phase_RT_L =
-            (s_t_elapsed_L_ms / s_current_swing_period_L_ms) * 100.0f;
-        s_t_elapsed_L_ms += CTRL_DT_MS;
+      tau_L = ComputeTrapezoidalTorque(
+          s_t_elapsed_L_ms, s_current_swing_period_L_ms, s_trap_tau_max_L);
+      swing_phase_RT_L =
+          (s_t_elapsed_L_ms / s_current_swing_period_L_ms) * 100.0f;
+      s_t_elapsed_L_ms += CTRL_DT_MS;
 
-        float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
-                              s_trap_plat_pct + s_trap_fall_pct;
-        if (s_t_elapsed_L_ms > s_current_swing_period_L_ms * total_dur_pct) {
-          s_trap_active_L = false;
-          swing_phase_RT_L = 0.0f;
-        }
+      float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
+                            s_trap_plat_pct + s_trap_fall_pct;
+      if (s_t_elapsed_L_ms > s_current_swing_period_L_ms * total_dur_pct) {
+        s_trap_active_L = false;
+        swing_phase_RT_L = 0.0f;
       }
     } else {
       swing_phase_RT_L = 0.0f;
@@ -838,19 +813,9 @@ static void Active_Loop(void) {
     tau_L = FVecDecoder_StepSingle(s_fvec_buf_LH);
   }
 
-  // Instant discrete cut-off
-  const bool r_sts_final = s_adaptive_assist_enabled && (s_gait_mode == RSTS);
-  const bool l_sts_final = s_adaptive_assist_enabled && (s_gait_mode == LSTS);
-  const bool should_stop_R_final = r_sts_final || Rstop_assist;
-  const bool should_stop_L_final = l_sts_final || Lstop_assist;
-
-  const float target_R = should_stop_R_final ? 0.0f : tau_R;
-  const float target_L = should_stop_L_final ? 0.0f : tau_L;
-
-  // Directly apply the torque without any LPF smoothing to ensure discrete
-  // drop.
-  s_tau_out_R = target_R;
-  s_tau_out_L = target_L;
+  // Output torque directly — trapezoidal profile handles its own lifecycle
+  s_tau_out_R = tau_R;
+  s_tau_out_L = tau_L;
 
   // Actuate in ACTIVE
   XM_SetAssistTorqueRH(s_tau_out_R);
@@ -1230,8 +1195,6 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
           LowPeak_UpdateThresh_OnSTS(s_Rdeg[2]);
         }
         if (s_adaptive_assist_enabled && s_gait_mode == RSTS) {
-          Rstop_assist = true;
-          Lstop_assist = true;
           // Rescale ongoing trapezoidal profile immediately for Right
           s_current_swing_period_R_ms = s_T_swing_STS_ms;
 
@@ -1272,8 +1235,6 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
           LowPeak_UpdateThresh_OnSTS(s_Ldeg[2]);
         }
         if (s_adaptive_assist_enabled && s_gait_mode == LSTS) {
-          Rstop_assist = true;
-          Lstop_assist = true;
           // Rescale ongoing trapezoidal profile immediately for Left
           s_current_swing_period_L_ms = s_T_swing_STS_ms;
 
@@ -1326,7 +1287,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       }
     }
     TswingRecording_ms = measured_swing_ms;
-    s_prev_swing_ms_R = measured_swing_ms;
+    s_prev_swing_ms = measured_swing_ms;
 
     // Normalization uses mean of the most recent SOS/STS swing times
     // (regardless of confidence).
@@ -1350,9 +1311,8 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       s_gait_mode = NONE;
     }
 
-    // Trigger Soft-stop on Upper Peak ALWAYS
-    Rstop_assist = true;
-    Lstop_assist = true;
+    // Upper peak: trapezoidal profile completes naturally, no forced stop.
+    // Legacy FVec profiles are reset.
     FVecDecoder_InitSingle(s_fvec_buf_RH);
     FVecDecoder_InitSingle(s_fvec_buf_LH);
   }
@@ -1397,7 +1357,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       }
     }
     TswingRecording_ms = measured_swing_ms;
-    s_prev_swing_ms_L = measured_swing_ms;
+    s_prev_swing_ms = measured_swing_ms;
 
     // Normalization uses mean of the most recent SOS/STS swing times
     // (regardless of confidence).
@@ -1422,9 +1382,7 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       s_gait_mode = NONE;
     }
 
-    // Trigger Soft-stop on Upper Peak ALWAYS
-    Rstop_assist = true;
-    Lstop_assist = true;
+    // FVec stop (Legacy profile)
     FVecDecoder_InitSingle(s_fvec_buf_RH);
     FVecDecoder_InitSingle(s_fvec_buf_LH);
   }
@@ -1444,16 +1402,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_R_stance_angle_sampled = true;
     s_dbg_R_stance_angle_sample = s_R_prev_stance_angle_at_dpeak;
     s_R_swing_time_ms = 0.0f;
-    // stop_assist는 오직 lower peak에서만 false로 바뀌고, 그 외에는 true 유지
+    // Lower peak: unconditionally clear stop_assist so next swing can fire
     if (is_moving) {
-      // 좌우 중 한쪽이라도 stop_assist가 true면, 둘 다 동시에 false로 바꾼다
-      // (soft-stop이 0에 충분히 수렴했을 때)
-      if (Rstop_assist || Lstop_assist) {
-        if (fabsf(s_tau_cmd_R) < 0.01f && fabsf(s_tau_cmd_L) < 0.01f) {
-          Rstop_assist = false;
-          Lstop_assist = false;
-        }
-      }
+      Rstop_assist = false;
+      Lstop_assist = false;
       Rflag_assist = true;
     }
   }
@@ -1471,16 +1423,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_L_stance_angle_sampled = true;
     s_dbg_L_stance_angle_sample = s_L_prev_stance_angle_at_dpeak;
     s_L_swing_time_ms = 0.0f;
-    // stop_assist는 오직 lower peak에서만 false로 바뀌고, 그 외에는 true 유지
+    // Lower peak: unconditionally clear stop_assist so next swing can fire
     if (is_moving) {
-      // 좌우 중 한쪽이라도 stop_assist가 true면, 둘 다 동시에 false로 바꾼다
-      // (soft-stop이 0에 충분히 수렴했을 때)
-      if (Rstop_assist || Lstop_assist) {
-        if (fabsf(s_tau_cmd_R) < 0.01f && fabsf(s_tau_cmd_L) < 0.01f) {
-          Rstop_assist = false;
-          Lstop_assist = false;
-        }
-      }
+      Rstop_assist = false;
+      Lstop_assist = false;
       Lflag_assist = true;
     }
   }
@@ -1531,11 +1477,12 @@ static void adaptive_assist(const GaitRecognitionResult_t *rec,
       Rflag_assist = false;
 
       // Dynamic Trapezoidal mode setup
+      const float TAU_NM_PER_LEVEL = 1.0f; // Scale 0-7 levels to actual Nm
       s_t_elapsed_R_ms = 0.0f;
-      s_current_swing_period_R_ms = s_prev_swing_ms_R;
+      s_current_swing_period_R_ms = s_prev_swing_ms;
 
-      s_trap_active_R = (tau_max_setting > 0 && !r_stop);
-      s_trap_tau_max_R = r_stop ? 0.0f : (float)tau_max_setting;
+      s_trap_active_R = (tau_max_setting > 0);
+      s_trap_tau_max_R = ((float)tau_max_setting * TAU_NM_PER_LEVEL);
     }
     if (rec->l_uprise_after_lower) {
       if (out_trig_L)
@@ -1543,23 +1490,27 @@ static void adaptive_assist(const GaitRecognitionResult_t *rec,
       Lflag_assist = false;
 
       // Dynamic Trapezoidal mode setup
+      const float TAU_NM_PER_LEVEL = 1.0f; // Scale 0-7 levels to actual Nm
       s_t_elapsed_L_ms = 0.0f;
-      s_current_swing_period_L_ms = s_prev_swing_ms_L;
+      s_current_swing_period_L_ms = s_prev_swing_ms;
 
-      s_trap_active_L = (tau_max_setting > 0 && !l_stop);
-      s_trap_tau_max_L = l_stop ? 0.0f : (float)tau_max_setting;
+      s_trap_active_L = (tau_max_setting > 0);
+      s_trap_tau_max_L = ((float)tau_max_setting * TAU_NM_PER_LEVEL);
     }
   }
 
-  // Use direct amplitude for s_tau_cmd, final output shaping is done in
-  // Active_Loop
-  s_tau_cmd_R = r_stop ? 0.0f : (float)tau_max_setting;
-  s_tau_cmd_L = l_stop ? 0.0f : (float)tau_max_setting;
+  // s_tau_cmd is now set by Active_Loop / Standby_Loop from real output.
+  // Just pass tau_max info to callers via out_tau pointers if needed.
+  const float TAU_NM_PER_LEVEL = 1.0f;
+  const float tau_R_ordered =
+      r_stop ? 0.0f : ((float)tau_max_setting * TAU_NM_PER_LEVEL);
+  const float tau_L_ordered =
+      l_stop ? 0.0f : ((float)tau_max_setting * TAU_NM_PER_LEVEL);
 
   if (out_tau_R)
-    *out_tau_R = s_tau_cmd_R;
+    *out_tau_R = tau_R_ordered;
   if (out_tau_L)
-    *out_tau_L = s_tau_cmd_L;
+    *out_tau_L = tau_L_ordered;
 }
 
 /**
@@ -1635,6 +1586,7 @@ static void ResetUserState(void) {
   s_swing_period_ms = 300.0f;
   s_T_swing_SOS_ms = 455.0f;
   s_T_swing_STS_ms = 338.0f;
+  s_prev_swing_ms = 400.0f;
 
   s_last_HC_class_is_valid = false;
   s_last_HC_is_STS = false;
