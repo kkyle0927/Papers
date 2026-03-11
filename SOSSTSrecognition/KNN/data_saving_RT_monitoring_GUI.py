@@ -51,7 +51,7 @@ SOF_VALUE = 0xAA55
 SOF_BYTES_LE = b"\x55\xAA"
 
 ## Firmware SavingData_t (packed) payload schema:
-STRUCT_FMT = '<IBBB20f6iBBf17fffffB'
+STRUCT_FMT = '<IBBB20f6iBBf17fffBff'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
 EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 208
@@ -153,7 +153,7 @@ def crc16_modbus(data: bytes, init_val: int = 0xFFFF) -> int:
     return crc
 
 def decode_packet(data_tuple):
-    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 17 + 2 + 1
+    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 17 + 2 + 1 + 2
     if len(data_tuple) != expected_elems:
         raise ValueError(f"Unexpected data length: {len(data_tuple)}")
     row = [0] * len(CSV_COLS)
