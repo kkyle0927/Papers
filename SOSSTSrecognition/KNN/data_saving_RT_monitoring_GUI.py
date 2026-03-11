@@ -162,6 +162,9 @@ def decode_packet(data_tuple):
     row[2] = int(data_tuple[2])
     row[3] = int(data_tuple[3])
     for i in range(20): row[4 + i] = float(data_tuple[4 + i])
+    # Convert Current (A) to Torque (Nm) using kt = 1.59
+    row[8] *= 1.59
+    row[9] *= 1.59
     base = 4 + 20
     for i in range(6): row[24 + i] = int(data_tuple[base + i])
     base = 4 + 20 + 6
@@ -386,7 +389,7 @@ class CsvReviewDialog(QtWidgets.QDialog):
         self.resize(1000, 800)
         self.csv_path = csv_path
         self.groups = [
-            ["LeftHipAngle", "RightHipAngle", "LeftHipTorque", "RightHipTorque"],
+            ["LeftHipAngle", "RightHipAngle", "LeftHipTorque", "RightHipTorque", "s_tau_cmd_L", "s_tau_cmd_R"],
             ["LeftHipImuGlobalAccX","LeftHipImuGlobalAccY","LeftHipImuGlobalAccZ"],
             ["LeftHipImuGlobalGyrX","LeftHipImuGlobalGyrY","LeftHipImuGlobalGyrZ"],
             ["LeftHipMotorAngle","RightHipMotorAngle","LeftThighAngle","RightThighAngle"],
@@ -434,7 +437,11 @@ class CsvReviewDialog(QtWidgets.QDialog):
                 if name not in self.col_index: continue
                 col = self.col_index[name]
                 if col < self.data.shape[1]:
-                    if "Left" in name or "_L" in name:
+                    if name == "s_tau_cmd_L":
+                        color = "#60a5fa" # Light Blue
+                    elif name == "s_tau_cmd_R":
+                        color = "#f87171" # Light Red
+                    elif "Left" in name or "_L" in name:
                         color = "#2563eb" # Blue
                     elif "Right" in name or "_R" in name:
                         color = "#dc2626" # Red
@@ -673,7 +680,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_plot_groups(self):
         g1 = ["LeftThighAngle", "RightThighAngle"]
-        g2 = ["LeftHipTorque", "RightHipTorque"]
+        g2 = ["LeftHipTorque", "RightHipTorque", "s_tau_cmd_L", "s_tau_cmd_R"]
         g3 = ["swing_phase_RT_R", "swing_phase_RT_L"]
         g4 = []
         self.plot_groups = [g1, g2, g3, g4]
@@ -759,7 +766,11 @@ class MainWindow(QtWidgets.QMainWindow):
             items = {}
             hues = max(8, len(group))
             for k, name in enumerate(group):
-                if "Left" in name or "_L" in name:
+                if name == "s_tau_cmd_L":
+                    color = "#60a5fa" # Light Blue
+                elif name == "s_tau_cmd_R":
+                    color = "#f87171" # Light Red
+                elif "Left" in name or "_L" in name:
                     color = "#2563eb" # Blue
                 elif "Right" in name or "_R" in name:
                     color = "#dc2626" # Red
