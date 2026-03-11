@@ -434,7 +434,13 @@ class CsvReviewDialog(QtWidgets.QDialog):
                 if name not in self.col_index: continue
                 col = self.col_index[name]
                 if col < self.data.shape[1]:
-                    pw.plot(self.loop_cnt, self.data[:, col], pen=pg.intColor(k), name=name)
+                    if "Left" in name or "_L" in name:
+                        color = "#2563eb" # Blue
+                    elif "Right" in name or "_R" in name:
+                        color = "#dc2626" # Red
+                    else:
+                        color = pg.intColor(k)
+                    pw.plot(self.loop_cnt, self.data[:, col], pen=pg.mkPen(color, width=2), name=name)
 
     def _on_visibility_changed(self): self._relayout()
     def _relayout(self):
@@ -753,8 +759,13 @@ class MainWindow(QtWidgets.QMainWindow):
             items = {}
             hues = max(8, len(group))
             for k, name in enumerate(group):
-                color = pg.intColor(k, hues=hues)
-                item = pw.plot([], [], pen=color, name=name)
+                if "Left" in name or "_L" in name:
+                    color = "#2563eb" # Blue
+                elif "Right" in name or "_R" in name:
+                    color = "#dc2626" # Red
+                else:
+                    color = pg.intColor(k, hues=hues)
+                item = pw.plot([], [], pen=pg.mkPen(color, width=2), name=name)
                 items[name] = item
             self._ts_items.append(items)
 
