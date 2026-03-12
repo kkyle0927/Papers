@@ -862,7 +862,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sanity_error_label.setFont(font)
         state_layout.addWidget(self.sanity_error_label)
 
-        self.debug_label = QtWidgets.QLabel(f"Expected total: {EXPECTED_TOTAL_PACKET_SIZE} bytes\nExpected payload: {PAYLOAD_SIZE} bytes\nLast packet: -")
+        self.debug_label = QtWidgets.QLabel(f"Expected: 208 or 216 bytes\nLast packet: -")
         self.debug_label.setWordWrap(True)
         self.debug_label.setStyleSheet("color: #374151;")
         state_layout.addWidget(self.debug_label)
@@ -1191,8 +1191,8 @@ class MainWindow(QtWidgets.QMainWindow):
             m = re.search(r"rx_len=(\d+)", msg)
             if m: self._last_rx_len = int(m.group(1))
         except: pass
-        expected_total = EXPECTED_TOTAL_PACKET_SIZE
-        expected_payload = PAYLOAD_SIZE
+        expected_total = 216
+        expected_payload = 210
         expected_total_from_payload = expected_payload + 6
         lines = [
             f"Expected total: {expected_total} bytes",
