@@ -268,11 +268,11 @@ class SerialWorker(QtCore.QObject):
         return buf.find(SOF_BYTES_LE)
 
     def _log_packet_debug(self, sof: int, length: int, packet_len: int = None, recv_crc: int = None, calc_crc: int = None):
-        now = time.time()
-        if (now - self._last_err_log_ts) < self._err_log_interval_s: return
-        self._last_err_log_ts = now
         parts = [f"rx_sof=0x{sof:04X}", f"rx_len={length}", f"expected={EXPECTED_TOTAL_PACKET_SIZE}"]
+        if recv_crc is not None: parts.append(f"rx_crc=0x{recv_crc:04X}")
+        if calc_crc is not None: parts.append(f"calc_crc=0x{calc_crc:04X}")
         msg = "Packet debug: " + ", ".join(parts)
+        print(msg) # Immediate console feedback
         self.status_msg.emit(msg)
         self.debug_msg.emit(msg)
 
@@ -335,9 +335,11 @@ class SerialWorker(QtCore.QObject):
                         del buf[:sof_idx]
                         if len(buf)<4: break
                     
-                    sof = SOF_VALUE
+                    sof = buf[0] | (buf[1] << 8)
                     length = buf[2] | (buf[3] << 8)
                     if length not in ALLOWED_TOTAL_PACKET_SIZES:
+                        # Print rejection details to console
+                        print(f"DEBUG: Rejecting SOF=0x{sof:04X}, LEN={length} (Expected {EXPECTED_TOTAL_PACKET_SIZE})")
                         del buf[0]; continue
                     if len(buf) < length: break
 
@@ -354,6 +356,7 @@ class SerialWorker(QtCore.QObject):
                     calc_crc = crc16_modbus(data_without_crc)
 
                     if recv_crc != calc_crc:
+                        print(f"DEBUG: CRC Mismatch! Rx: 0x{recv_crc:04X}, Calc: 0x{calc_crc:04X}")
                         self._inc_error("CRC Mismatch")
                     else:
                         payload = packet[4:-2]
