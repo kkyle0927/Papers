@@ -51,11 +51,11 @@ SOF_VALUE = 0xAA55
 SOF_BYTES_LE = b"\x55\xAA"
 
 ## Firmware SavingData_t (packed) payload schema:
-STRUCT_FMT = '<IBBB20f6iBBf19fBffff'
-PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
+STRUCT_FMT_208 = '<IBBB20f6iBBf17fffBff'
+STRUCT_FMT_216 = '<IBBB20f6iBBf19fBffff'
 
-EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 216
-ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
+EXPECTED_TOTAL_PACKET_SIZE = 216 
+ALLOWED_TOTAL_PACKET_SIZES = {208, 216}
 
 CSV_HEADER = (
     "LoopCnt,H10Mode,H10AssistLevel,SmartAssist," 
@@ -154,9 +154,9 @@ def crc16_modbus(data: bytes, init_val: int = 0xFFFF) -> int:
     return crc
 
 def decode_packet(data_tuple):
-    expected_elems = 57
-    if len(data_tuple) != expected_elems:
-        raise ValueError(f"Unexpected data length: {len(data_tuple)} (expected {expected_elems})")
+    # Support both legacy (55) and extended (57) formats
+    if len(data_tuple) not in (55, 57):
+        raise ValueError(f"Unexpected data length: {len(data_tuple)}")
     row = [0] * len(CSV_COLS)
     row[0] = int(data_tuple[0])
     row[1] = int(data_tuple[1])
@@ -182,12 +182,20 @@ def decode_packet(data_tuple):
     row[52] = int(data_tuple[base_new + 2])    # adaptive_assist_enabled
     row[53] = float(data_tuple[base_new + 3])  # swing_phase_RT_R
     row[54] = float(data_tuple[base_new + 4])  # swing_phase_RT_L
-    row[55] = float(data_tuple[base_new + 5])  # s_tau_original_R
-    row[56] = float(data_tuple[base_new + 6])  # s_tau_original_L
+    row[55] = float(data_tuple[base_new + 5]) if len(data_tuple) > 55 else 0.0 # s_tau_original_R
+    row[56] = float(data_tuple[base_new + 6]) if len(data_tuple) > 56 else 0.0 # s_tau_original_L
     return row
 
 def decode_payload_to_row(payload: bytes, last_good_row=None):
-    data_tuple = struct.unpack(STRUCT_FMT, payload)
+    p_size = len(payload)
+    if p_size == 202: # 208 - 6
+        fmt = STRUCT_FMT_208
+    elif p_size == 210: # 216 - 6
+        fmt = STRUCT_FMT_216
+    else:
+        raise ValueError(f"Unknown payload size: {p_size}")
+        
+    data_tuple = struct.unpack(fmt, payload)
     return decode_packet(data_tuple)
 
 def row_to_csv_line(row):
@@ -360,8 +368,8 @@ class SerialWorker(QtCore.QObject):
                         self._inc_error("CRC Mismatch")
                     else:
                         payload = packet[4:-2]
-                        if len(payload) != PAYLOAD_SIZE:
-                            self._inc_error("Payload Size Mismatch")
+                        if len(payload) not in (202, 210):
+                            self._inc_error(f"Bad Payload Size: {len(payload)}")
                         else:
                             try:
                                 row = decode_payload_to_row(payload, self._last_good_row)
