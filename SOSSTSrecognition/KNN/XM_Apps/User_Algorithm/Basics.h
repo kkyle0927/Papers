@@ -7,7 +7,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-
 /* --- 공통 enum / struct --- */
 typedef enum {
   Record_OFF,
@@ -95,8 +94,15 @@ typedef struct __attribute__((packed)) {
   float swing_phase_RT_R;
   float swing_phase_RT_L;
 
+  float s_tau_original_R;
+  float s_tau_original_L;
+
   uint16_t crc;
 } SavingData_t;
+
+/* --- 공유 전역 변수 extern --- */
+extern volatile float s_tau_original_R;
+extern volatile float s_tau_original_L;
 
 // Wire-format safety checks:
 // - 'crc' must be the last field.
@@ -111,7 +117,7 @@ typedef struct __attribute__((packed)) {
 _Static_assert(offsetof(SavingData_t, crc) + sizeof(((SavingData_t *)0)->crc) ==
                    sizeof(SavingData_t),
                "SavingData_t layout error: 'crc' must be the last field");
-_Static_assert(sizeof(SavingData_t) == 208,
+_Static_assert(sizeof(SavingData_t) == 216,
                "SavingData_t size mismatch: update host parser struct");
 #else
 typedef char
@@ -121,7 +127,7 @@ typedef char
                                       ? 1
                                       : -1];
 typedef char
-    SavingData_t_size_must_match[(sizeof(SavingData_t) == 208) ? 1 : -1];
+    SavingData_t_size_must_match[(sizeof(SavingData_t) == 216) ? 1 : -1];
 #endif
 #endif
 

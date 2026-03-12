@@ -85,6 +85,8 @@ void FillAndSendSavingData(void) {
 
   SavingData.swing_phase_RT_R = (float)swing_phase_RT_R;
   SavingData.swing_phase_RT_L = (float)swing_phase_RT_L;
+  SavingData.s_tau_original_R = (float)s_tau_original_R;
+  SavingData.s_tau_original_L = (float)s_tau_original_L;
 
   // 3) 헤더/CRC 설정
   // NOTE: 'len' MUST match the actual transmitted byte count.

@@ -51,10 +51,10 @@ SOF_VALUE = 0xAA55
 SOF_BYTES_LE = b"\x55\xAA"
 
 ## Firmware SavingData_t (packed) payload schema:
-STRUCT_FMT = '<IBBB20f6iBBf17fffBff'
+STRUCT_FMT = '<IBBB20f6iBBf17fffBffff'
 PAYLOAD_SIZE = struct.calcsize(STRUCT_FMT)
 
-EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 208
+EXPECTED_TOTAL_PACKET_SIZE = 2 + 2 + PAYLOAD_SIZE + 2  # 216
 ALLOWED_TOTAL_PACKET_SIZES = {EXPECTED_TOTAL_PACKET_SIZE}
 
 CSV_HEADER = (
@@ -73,7 +73,8 @@ CSV_HEADER = (
     "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y," 
     "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down,"
     "s_tau_cmd_R,s_tau_cmd_L,adaptive_assist_enabled,"
-    "swing_phase_RT_R,swing_phase_RT_L"
+    "swing_phase_RT_R,swing_phase_RT_L,"
+    "s_tau_original_R,s_tau_original_L"
 )
 CSV_COLS = CSV_HEADER.split(",")
 
@@ -153,7 +154,7 @@ def crc16_modbus(data: bytes, init_val: int = 0xFFFF) -> int:
     return crc
 
 def decode_packet(data_tuple):
-    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 17 + 2 + 1 + 2
+    expected_elems = 1 + 3 + 20 + 6 + 2 + 1 + 17 + 2 + 1 + 4
     if len(data_tuple) != expected_elems:
         raise ValueError(f"Unexpected data length: {len(data_tuple)}")
     row = [0] * len(CSV_COLS)
@@ -181,6 +182,8 @@ def decode_packet(data_tuple):
     row[52] = int(data_tuple[base_new + 2])    # adaptive_assist_enabled
     row[53] = float(data_tuple[base_new + 3])  # swing_phase_RT_R
     row[54] = float(data_tuple[base_new + 4])  # swing_phase_RT_L
+    row[55] = float(data_tuple[base_new + 5])  # s_tau_original_R
+    row[56] = float(data_tuple[base_new + 6])  # s_tau_original_L
     return row
 
 def decode_payload_to_row(payload: bytes, last_good_row=None):
@@ -680,7 +683,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_plot_groups(self):
         g1 = ["LeftThighAngle", "RightThighAngle"]
-        g2 = ["LeftHipTorque", "RightHipTorque", "s_tau_cmd_L", "s_tau_cmd_R"]
+        g2 = ["LeftHipTorque", "RightHipTorque", "s_tau_cmd_L", "s_tau_cmd_R", "s_tau_original_L", "s_tau_original_R"]
         g3 = ["swing_phase_RT_R", "swing_phase_RT_L"]
         g4 = []
         self.plot_groups = [g1, g2, g3, g4]
@@ -768,15 +771,26 @@ class MainWindow(QtWidgets.QMainWindow):
             for k, name in enumerate(group):
                 if name == "s_tau_cmd_L":
                     color = "#60a5fa" # Light Blue
+                    pen = pg.mkPen(color, width=2)
                 elif name == "s_tau_cmd_R":
                     color = "#f87171" # Light Red
+                    pen = pg.mkPen(color, width=2)
+                elif name == "s_tau_original_L":
+                    color = (147, 51, 234, 120) # Purple, Semi-transparent
+                    pen = pg.mkPen(color, width=2, style=QtCore.Qt.DashLine)
+                elif name == "s_tau_original_R":
+                    color = (217, 70, 239, 120) # Magenta, Semi-transparent
+                    pen = pg.mkPen(color, width=2, style=QtCore.Qt.DashLine)
                 elif "Left" in name or "_L" in name:
                     color = "#2563eb" # Blue
+                    pen = pg.mkPen(color, width=2)
                 elif "Right" in name or "_R" in name:
                     color = "#dc2626" # Red
+                    pen = pg.mkPen(color, width=2)
                 else:
                     color = pg.intColor(k, hues=hues)
-                item = pw.plot([], [], pen=pg.mkPen(color, width=2), name=name)
+                    pen = pg.mkPen(color, width=2)
+                item = pw.plot([], [], pen=pen, name=name)
                 items[name] = item
             self._ts_items.append(items)
 

@@ -207,6 +207,9 @@ static float s_trap_tau_max_L = 0.0f;
 volatile float swing_phase_RT_R = 0.0f;
 volatile float swing_phase_RT_L = 0.0f;
 
+volatile float s_tau_original_R = 0.0f;
+volatile float s_tau_original_L = 0.0f;
+
 // Reference periods for current swing (shared between L and R)
 static float s_prev_swing_ms = 400.0f;
 static float s_current_swing_period_R_ms = 400.0f;
@@ -588,37 +591,32 @@ static void Standby_Loop(void) {
 
   if (s_assist_profile_mode == PROFILE_MODE_DYNAMIC_TWITCH) {
     // Dynamic Trapezoidal Mode
+    // swing_phase_RT tracks elapsed / period continuously while swing is
+    // active. ComputeTrapezoidalTorque returns 0 naturally after the fall
+    // region ends, so no forced cutoff is needed here.
     if (s_trap_active_R) {
       tau_R = ComputeTrapezoidalTorque(
           s_t_elapsed_R_ms, s_current_swing_period_R_ms, s_trap_tau_max_R);
+      s_tau_original_R = ComputeTrapezoidalTorque(
+          s_t_elapsed_R_ms, s_prev_swing_ms, s_trap_tau_max_R);
       swing_phase_RT_R =
           (s_t_elapsed_R_ms / s_current_swing_period_R_ms) * 100.0f;
       s_t_elapsed_R_ms += CTRL_DT_MS;
-
-      float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
-                            s_trap_plat_pct + s_trap_fall_pct;
-      if (s_t_elapsed_R_ms > s_current_swing_period_R_ms * total_dur_pct) {
-        s_trap_active_R = false;
-        swing_phase_RT_R = 0.0f;
-      }
     } else {
+      s_tau_original_R = 0.0f;
       swing_phase_RT_R = 0.0f;
     }
 
     if (s_trap_active_L) {
       tau_L = ComputeTrapezoidalTorque(
           s_t_elapsed_L_ms, s_current_swing_period_L_ms, s_trap_tau_max_L);
+      s_tau_original_L = ComputeTrapezoidalTorque(
+          s_t_elapsed_L_ms, s_prev_swing_ms, s_trap_tau_max_L);
       swing_phase_RT_L =
           (s_t_elapsed_L_ms / s_current_swing_period_L_ms) * 100.0f;
       s_t_elapsed_L_ms += CTRL_DT_MS;
-
-      float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
-                            s_trap_plat_pct + s_trap_fall_pct;
-      if (s_t_elapsed_L_ms > s_current_swing_period_L_ms * total_dur_pct) {
-        s_trap_active_L = false;
-        swing_phase_RT_L = 0.0f;
-      }
     } else {
+      s_tau_original_L = 0.0f;
       swing_phase_RT_L = 0.0f;
     }
 
@@ -771,36 +769,31 @@ static void Active_Loop(void) {
 
   if (s_assist_profile_mode == PROFILE_MODE_DYNAMIC_TWITCH) {
     // Dynamic Trapezoidal Mode
+    // swing_phase_RT tracks elapsed / period continuously while swing is
+    // active. ComputeTrapezoidalTorque returns 0 naturally after the fall
+    // region ends, so no forced cutoff is needed here.
     if (s_trap_active_R) {
       tau_R = ComputeTrapezoidalTorque(
           s_t_elapsed_R_ms, s_current_swing_period_R_ms, s_trap_tau_max_R);
+      s_tau_original_R = ComputeTrapezoidalTorque(
+          s_t_elapsed_R_ms, s_prev_swing_ms, s_trap_tau_max_R);
       swing_phase_RT_R =
           (s_t_elapsed_R_ms / s_current_swing_period_R_ms) * 100.0f;
       s_t_elapsed_R_ms += CTRL_DT_MS;
-
-      float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
-                            s_trap_plat_pct + s_trap_fall_pct;
-      if (s_t_elapsed_R_ms > s_current_swing_period_R_ms * total_dur_pct) {
-        s_trap_active_R = false;
-        swing_phase_RT_R = 0.0f;
-      }
     } else {
+      s_tau_original_R = 0.0f;
       swing_phase_RT_R = 0.0f;
     }
     if (s_trap_active_L) {
       tau_L = ComputeTrapezoidalTorque(
           s_t_elapsed_L_ms, s_current_swing_period_L_ms, s_trap_tau_max_L);
+      s_tau_original_L = ComputeTrapezoidalTorque(
+          s_t_elapsed_L_ms, s_prev_swing_ms, s_trap_tau_max_L);
       swing_phase_RT_L =
           (s_t_elapsed_L_ms / s_current_swing_period_L_ms) * 100.0f;
       s_t_elapsed_L_ms += CTRL_DT_MS;
-
-      float total_dur_pct = s_trap_offset_pct + s_trap_rise_pct +
-                            s_trap_plat_pct + s_trap_fall_pct;
-      if (s_t_elapsed_L_ms > s_current_swing_period_L_ms * total_dur_pct) {
-        s_trap_active_L = false;
-        swing_phase_RT_L = 0.0f;
-      }
     } else {
+      s_tau_original_L = 0.0f;
       swing_phase_RT_L = 0.0f;
     }
 
@@ -1311,6 +1304,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       s_gait_mode = NONE;
     }
 
+    // Upper peak = end of right swing. Stop phase tracking.
+    s_trap_active_R = false;
+    swing_phase_RT_R = 0.0f;
+
     // Upper peak: trapezoidal profile completes naturally, no forced stop.
     // Legacy FVec profiles are reset.
     FVecDecoder_InitSingle(s_fvec_buf_RH);
@@ -1381,6 +1378,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       s_gait_mode_latch_leg = GAIT_LATCH_NONE;
       s_gait_mode = NONE;
     }
+
+    // Upper peak = end of left swing. Stop phase tracking.
+    s_trap_active_L = false;
+    swing_phase_RT_L = 0.0f;
 
     // FVec stop (Legacy profile)
     FVecDecoder_InitSingle(s_fvec_buf_RH);
