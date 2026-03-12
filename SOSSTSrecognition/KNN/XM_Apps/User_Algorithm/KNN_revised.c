@@ -211,7 +211,7 @@ volatile float s_tau_original_R = 0.0f;
 volatile float s_tau_original_L = 0.0f;
 
 // Reference periods for current swing (shared between L and R)
-static float s_prev_swing_ms = 400.0f;
+static float s_prev_swing_ms = 430.0f;
 static float s_current_swing_period_R_ms = 400.0f;
 static float s_current_swing_period_L_ms = 400.0f;
 
@@ -282,7 +282,7 @@ static float s_hc_deg_thresh = 10.0f;
 
 // Track swing time separately by classification category (no left/right split).
 static float s_T_swing_SOS_ms = 455.0f;
-static float s_T_swing_STS_ms = 338.0f;
+static float s_T_swing_STS_ms = 440.0f;
 static bool s_last_HC_class_is_valid = false;
 static bool s_last_HC_is_STS = false;
 
@@ -1480,7 +1480,7 @@ static void adaptive_assist(const GaitRecognitionResult_t *rec,
       // Dynamic Trapezoidal mode setup
       const float TAU_NM_PER_LEVEL = 1.0f; // Scale 0-7 levels to actual Nm
       s_t_elapsed_R_ms = 0.0f;
-      s_current_swing_period_R_ms = s_prev_swing_ms;
+      s_current_swing_period_R_ms = s_T_swing_SOS_ms;  // default: 직전 SOS swing time
 
       s_trap_active_R = (tau_max_setting > 0);
       s_trap_tau_max_R = ((float)tau_max_setting * TAU_NM_PER_LEVEL);
@@ -1493,7 +1493,7 @@ static void adaptive_assist(const GaitRecognitionResult_t *rec,
       // Dynamic Trapezoidal mode setup
       const float TAU_NM_PER_LEVEL = 1.0f; // Scale 0-7 levels to actual Nm
       s_t_elapsed_L_ms = 0.0f;
-      s_current_swing_period_L_ms = s_prev_swing_ms;
+      s_current_swing_period_L_ms = s_T_swing_SOS_ms;  // default: 직전 SOS swing time
 
       s_trap_active_L = (tau_max_setting > 0);
       s_trap_tau_max_L = ((float)tau_max_setting * TAU_NM_PER_LEVEL);
@@ -1586,8 +1586,8 @@ static void ResetUserState(void) {
 
   s_swing_period_ms = 300.0f;
   s_T_swing_SOS_ms = 455.0f;
-  s_T_swing_STS_ms = 338.0f;
-  s_prev_swing_ms = 400.0f;
+  s_T_swing_STS_ms = 440.0f;
+  s_prev_swing_ms = 430.0f;
 
   s_last_HC_class_is_valid = false;
   s_last_HC_is_STS = false;
