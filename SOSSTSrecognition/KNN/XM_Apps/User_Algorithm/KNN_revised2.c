@@ -55,9 +55,30 @@ typedef struct {
   float gain_inv;
 } FVecModeParam_t;
 
+/*
+ * FVec IIR filter design (2nd-order critically-damped, impulse-driven):
+ *
+ *   H(z) = a0 * (1 + z^-1)^2 / (1 - p * z^-1)^2
+ *
+ *   p  = e^(-dt / Tp)          dt = CTRL_DT_MS = 2ms
+ *   b1 = 2p,  b2 = -p^2
+ *   a0 = a2,  a1 = 2*a0        (normalized so impulse response peaks at 1.0)
+ *
+ *   Impulse response peaks at t = Tp (n_peak = Tp / dt samples).
+ *   With input impulse amplitude = tau_max_setting,
+ *   actual peak torque = tau_max_setting [Nm].
+ *
+ * Mode 0 assist profile (Tp = 70 ms):
+ *   - Triggered at uprise after lower peak (swing initiation)
+ *   - Rises to peak torque at t = 70 ms
+ *   - Naturally decays: 10% at ~344 ms, 5% at ~404 ms, 1% at ~536 ms
+ *   - Typical SOS trigger-to-upper-peak ≈ 449 ms (from experimental data)
+ *     → residual ~4% at upper peak, effectively zero
+ *   - STS classified at HC → FVec reset → immediate cutoff to 0
+ */
 static const FVecModeParam_t kFVecModeParam[F_VECTOR_NUM_MODES] = {
-    /* Mode 0: Tp = 0.10 s @ 500Hz (Fixed from 1000Hz original) */
-    {0.013456632f, 0.026913264f, 0.013456632f, 1.960199003f, -0.960596010f,
+    /* Mode 0: Tp = 0.07 s (70 ms) @ 500Hz */
+    {0.018873250f, 0.037746500f, 0.018873250f, 1.943665750f, -0.944459137f,
      1.0f},
     /* Mode 1: Tp = 0.20 s @ 500Hz (Fixed from 1000Hz original) */
     {0.006761846f, 0.013523692f, 0.006761846f, 1.980149875f, -0.980248813f,
@@ -96,7 +117,12 @@ static FVecSlot_t s_fvec_buf_RH[F_VECTOR_BUFF_SIZE];
 
 // Manuscript f-vector (single): {mode_idx, tau_max, delay_ms, t_end_ms}
 // Applies identically to RH and LH.
-static const float kManuscriptFVec[4] = {0.0f, 3.0f, 0.0f, 400.0f};
+// t_end = 8 * Tp (Mode 0, Tp=70ms) → residual < 1% at slot expiry.
+static const float kManuscriptFVec[4] = {0.0f, 3.0f, 0.0f, 560.0f};
+
+// Firmware build tag — check via Live Expressions to confirm flash is up to date.
+// Bump this number every time you re-flash.
+__attribute__((used)) volatile int FW_BUILD_TAG = 20260332;
 
 // Assist torque amplitude (tau_max) controlled by XM_BTN_1 click.
 // Cycles: 0 -> 1 -> 2 -> ... -> 7 -> 0 -> ...
@@ -182,7 +208,7 @@ static float s_Ldeg[3] = {0.0f, 0.0f, 0.0f};
 
 // --- DUAL MODE ASSIST VARIABLES ---
 volatile AssistProfileMode_t s_assist_profile_mode =
-    PROFILE_MODE_DYNAMIC_TWITCH;
+    PROFILE_MODE_LEGACY_FVEC;
 
 volatile float s_target_swing_phase_pct =
     0.20f; // This was for Twitch mode, can be repurposed or removed
@@ -455,6 +481,9 @@ void User_Setup(void) {
   FVecDecoder_Init();
   ResetUserState();
   s_prevRecordingState = Recording;
+
+  // Force linker to keep FW_BUILD_TAG (prevents --gc-sections removal)
+  (void)FW_BUILD_TAG;
 }
 
 /* =================================================================
@@ -1173,12 +1202,9 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
           LowPeak_UpdateThresh_OnSTS(s_Rdeg[2]);
         }
         if (s_adaptive_assist_enabled && s_gait_mode == RSTS) {
-          // Rescale ongoing trapezoidal profile immediately for Right
-          // s_current_swing_period_R_ms = s_T_swing_STS_ms; // Removed
-
-          // Trajectory decoding 즉시 중단 (양쪽 모두)
+          // STS 분류 + adaptive ON → R 보조력 즉시 중단
           FVecDecoder_InitSingle(s_fvec_buf_RH);
-          FVecDecoder_InitSingle(s_fvec_buf_LH);
+          Rstop_assist = true;
         }
       } else if (!is_right_swing) {
         s_HC_Lswing4upcond = true;
@@ -1213,12 +1239,9 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
           LowPeak_UpdateThresh_OnSTS(s_Ldeg[2]);
         }
         if (s_adaptive_assist_enabled && s_gait_mode == LSTS) {
-          // Rescale ongoing trapezoidal profile immediately for Left
-          // s_current_swing_period_L_ms = s_T_swing_STS_ms; // Removed
-
-          // Trajectory decoding 즉시 중단 (양쪽 모두)
-          FVecDecoder_InitSingle(s_fvec_buf_RH);
+          // STS 분류 + adaptive ON → L 보조력 즉시 중단
           FVecDecoder_InitSingle(s_fvec_buf_LH);
+          Lstop_assist = true;
         }
       }
     }
@@ -1293,10 +1316,8 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_impulse_active_R = false;
     swing_phase_RT_R = 0.0f;
 
-    // Upper peak: trapezoidal profile completes naturally, no forced stop.
-    // Legacy FVec profiles are reset.
-    FVecDecoder_InitSingle(s_fvec_buf_RH);
-    FVecDecoder_InitSingle(s_fvec_buf_LH);
+    // No FVec reset here — let the impulse response decay naturally.
+    // Slot auto-expires at t_end (560ms). STS cutoff is handled at HC.
   }
 
   if ((s_Ldeg[2] - s_Ldeg[1]) * (s_Ldeg[1] - s_Ldeg[0]) < s_var &&
@@ -1368,9 +1389,8 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_impulse_active_L = false;
     swing_phase_RT_L = 0.0f;
 
-    // FVec stop (Legacy profile)
-    FVecDecoder_InitSingle(s_fvec_buf_RH);
-    FVecDecoder_InitSingle(s_fvec_buf_LH);
+    // No FVec reset here — let the impulse response decay naturally.
+    // Slot auto-expires at t_end (560ms). STS cutoff is handled at HC.
   }
 
   // Lower peak detection
