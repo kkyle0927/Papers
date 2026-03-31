@@ -14,52 +14,46 @@ disp('모든 데이터 로드가 완료되었습니다.');
 fprintf('yesKNN 데이터 개수: %d\n', numel(yesKNN));
 fprintf('noKNN 데이터 개수: %d\n', numel(noKNN));
 
-%% 3) Figure 1: yesKNN (adaptive ON)
-if ~isempty(yesKNN)
-    T_yes = yesKNN{1};
+%% 3) Figure 1: yesKNN (adaptive ON) — one figure per file
+for iFile = 1:numel(yesKNN)
+    T_yes = yesKNN{iFile};
 
     [leftThighVel_yes, rightThighVel_yes] = compute_thigh_velocity(T_yes);
     leftPower_yes  = leftThighVel_yes  .* T_yes.LeftHipTorque;
     rightPower_yes = rightThighVel_yes .* T_yes.RightHipTorque;
 
-    % Gait event 검출
-    ev_yes = detect_gait_events(T_yes);
-
-    % SOS/STS 라벨 (앞 2개 SOS, 나머지 STS)
+    ev_yes        = detect_gait_events(T_yes);
     hc_labels_yes = label_sos_sts(ev_yes.hc_idx, 2);
 
-    % 가상 개형: STS에서 adaptive 안 했다면 (HC에서 fall 안 하고 upper peak까지 유지)
     tau_cf_R_yes = gen_counterfactual_yes2no(T_yes.s_tau_cmd_R, ...
         ev_yes.hc_idx, ev_yes.up_R_idx, hc_labels_yes, ev_yes.trig_R_idx);
     tau_cf_L_yes = gen_counterfactual_yes2no(T_yes.s_tau_cmd_L, ...
         ev_yes.hc_idx, ev_yes.up_L_idx, hc_labels_yes, ev_yes.trig_L_idx);
 
-    figure('Name', 'Adaptive ON (yesKNN)', 'Color', 'w', 'Position', [100 50 950 1050]);
+    figure('Name', sprintf('Adaptive ON (yesKNN) — file %d', iFile), ...
+           'Color', 'w', 'Position', [100 50 950 1050]);
 
     ran_a = 1; ran_b = height(T_yes);
 
-    % 1) Thigh Angle + gait events
     subplot(5, 1, 1);
     hold on; grid on; box on;
     plot(T_yes.LeftThighAngle,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Thigh');
     plot(T_yes.RightThighAngle, 'r-', 'LineWidth', 1.5, 'DisplayName', 'Right Thigh');
     plot_gait_events(gca, ev_yes, hc_labels_yes, T_yes);
     ylabel('Angle (deg)');
-    title('Adaptive ON - Thigh Angles');
+    title(sprintf('Adaptive ON [%d] - Thigh Angles', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 2) Hip Torque
     subplot(5, 1, 2);
     hold on; grid on; box on;
     plot(T_yes.LeftHipTorque,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Hip Torque');
     plot(T_yes.RightHipTorque, 'r-', 'LineWidth', 1.5, 'DisplayName', 'Right Hip Torque');
     ylabel('Torque (Nm)');
-    title('Adaptive ON - Hip Torques');
+    title(sprintf('Adaptive ON [%d] - Hip Torques', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 3) [NEW] Assist Torque Comparison
     subplot(5, 1, 3);
     hold on; grid on; box on;
     plot(T_yes.s_tau_cmd_R, 'r-',  'LineWidth', 1.5, 'DisplayName', 'Assist R (actual)');
@@ -68,22 +62,20 @@ if ~isempty(yesKNN)
     plot(tau_cf_L_yes, 'Color', [0 0.7 0], 'LineStyle', '--', 'LineWidth', 1.5, 'DisplayName', 'L if no adaptive');
     plot_gait_events_lines_only(gca, ev_yes, hc_labels_yes);
     ylabel('Torque (Nm)');
-    title('Adaptive ON - Assist Comparison (green = if adaptive OFF)');
+    title(sprintf('Adaptive ON [%d] - Assist Comparison (green = if adaptive OFF)', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 4) Angular Velocity
     subplot(5, 1, 4);
     hold on; grid on; box on;
     plot(leftThighVel_yes,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Thigh Vel');
     plot(rightThighVel_yes, 'r-', 'LineWidth', 1.5, 'DisplayName', 'Right Thigh Vel');
     yline(0, 'k--', 'LineWidth', 1);
     ylabel('Angular Velocity (rad/s)');
-    title('Adaptive ON - Thigh Angular Velocity');
+    title(sprintf('Adaptive ON [%d] - Thigh Angular Velocity', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 5) Power
     subplot(5, 1, 5);
     hold on; grid on; box on;
     plot(leftPower_yes,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Hip Power');
@@ -91,57 +83,51 @@ if ~isempty(yesKNN)
     yline(0, 'k--', 'LineWidth', 1);
     xlabel('Samples');
     ylabel('Power (W)');
-    title('Adaptive ON - Hip Power');
+    title(sprintf('Adaptive ON [%d] - Hip Power', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 end
 
-%% 4) Figure 2: noKNN (adaptive OFF)
-if ~isempty(noKNN)
-    T_no = noKNN{1};
+%% 4) Figure 2: noKNN (adaptive OFF) — one figure per file
+for iFile = 1:numel(noKNN)
+    T_no = noKNN{iFile};
 
     [leftThighVel_no, rightThighVel_no] = compute_thigh_velocity(T_no);
     leftPower_no  = leftThighVel_no  .* T_no.LeftHipTorque;
     rightPower_no = rightThighVel_no .* T_no.RightHipTorque;
 
-    % Gait event 검출
-    ev_no = detect_gait_events(T_no);
-
-    % SOS/STS 라벨
+    ev_no        = detect_gait_events(T_no);
     hc_labels_no = label_sos_sts(ev_no.hc_idx, 2);
 
-    % 가상 개형: STS에서 adaptive 했다면 (HC에서 30ms fall)
     tau_cf_R_no = gen_counterfactual_no2yes(T_no.s_tau_cmd_R, ...
         ev_no.hc_idx, hc_labels_no);
     tau_cf_L_no = gen_counterfactual_no2yes(T_no.s_tau_cmd_L, ...
         ev_no.hc_idx, hc_labels_no);
 
-    figure('Name', 'Adaptive OFF (noKNN)', 'Color', 'w', 'Position', [1100 50 950 1050]);
+    figure('Name', sprintf('Adaptive OFF (noKNN) — file %d', iFile), ...
+           'Color', 'w', 'Position', [1100 50 950 1050]);
 
     ran_a = 1; ran_b = height(T_no);
 
-    % 1) Thigh Angle + gait events
     subplot(5, 1, 1);
     hold on; grid on; box on;
     plot(T_no.LeftThighAngle,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Thigh');
     plot(T_no.RightThighAngle, 'r-', 'LineWidth', 1.5, 'DisplayName', 'Right Thigh');
     plot_gait_events(gca, ev_no, hc_labels_no, T_no);
     ylabel('Angle (deg)');
-    title('Adaptive OFF - Thigh Angles');
+    title(sprintf('Adaptive OFF [%d] - Thigh Angles', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 2) Hip Torque
     subplot(5, 1, 2);
     hold on; grid on; box on;
     plot(T_no.LeftHipTorque,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Hip Torque');
     plot(T_no.RightHipTorque, 'r-', 'LineWidth', 1.5, 'DisplayName', 'Right Hip Torque');
     ylabel('Torque (Nm)');
-    title('Adaptive OFF - Hip Torques');
+    title(sprintf('Adaptive OFF [%d] - Hip Torques', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 3) [NEW] Assist Torque Comparison
     subplot(5, 1, 3);
     hold on; grid on; box on;
     plot(T_no.s_tau_cmd_R, 'r-',  'LineWidth', 1.5, 'DisplayName', 'Assist R (actual)');
@@ -150,22 +136,20 @@ if ~isempty(noKNN)
     plot(tau_cf_L_no, 'Color', [0 0.7 0], 'LineStyle', '--', 'LineWidth', 1.5, 'DisplayName', 'L if adaptive ON');
     plot_gait_events_lines_only(gca, ev_no, hc_labels_no);
     ylabel('Torque (Nm)');
-    title('Adaptive OFF - Assist Comparison (green = if adaptive ON)');
+    title(sprintf('Adaptive OFF [%d] - Assist Comparison (green = if adaptive ON)', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 4) Angular Velocity
     subplot(5, 1, 4);
     hold on; grid on; box on;
     plot(leftThighVel_no,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Thigh Vel');
     plot(rightThighVel_no, 'r-', 'LineWidth', 1.5, 'DisplayName', 'Right Thigh Vel');
     yline(0, 'k--', 'LineWidth', 1);
     ylabel('Angular Velocity (rad/s)');
-    title('Adaptive OFF - Thigh Angular Velocity');
+    title(sprintf('Adaptive OFF [%d] - Thigh Angular Velocity', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 
-    % 5) Power
     subplot(5, 1, 5);
     hold on; grid on; box on;
     plot(leftPower_no,  'b-', 'LineWidth', 1.5, 'DisplayName', 'Left Hip Power');
@@ -173,33 +157,52 @@ if ~isempty(noKNN)
     yline(0, 'k--', 'LineWidth', 1);
     xlabel('Samples');
     ylabel('Power (W)');
-    title('Adaptive OFF - Hip Power');
+    title(sprintf('Adaptive OFF [%d] - Hip Power', iFile));
     legend('Location', 'best');
     xlim([ran_a, ran_b]);
 end
 
-%% 5) Figure 3: STS Assist Analysis (yesKNN vs noKNN, Left leg)
+%% 5) Figure 3: STS Assist Analysis (yesKNN vs noKNN, Left leg, all files pooled)
 if ~isempty(yesKNN) && ~isempty(noKNN)
     STS_TARGET = 20;  % STS angle target — mean STS HC angle from data (~20 deg)
 
-    % Left leg only
-    stats_yes_L = extract_sts_swing_stats(T_yes, ev_yes, hc_labels_yes, 'L');
-    stats_no_L  = extract_sts_swing_stats(T_no,  ev_no,  hc_labels_no,  'L');
-    peak_yes_L  = extract_sts_peak_stats(T_yes, ev_yes, hc_labels_yes, 'L', STS_TARGET);
-    peak_no_L   = extract_sts_peak_stats(T_no,  ev_no,  hc_labels_no,  'L', STS_TARGET);
+    % Accumulate stats across ALL yesKNN files (left leg STS only)
+    dur_yes = []; past_yes = []; ang_yes = []; work_ratio_yes = []; peaks_yes = []; ov_yes = [];
+    impulse_past_yes = []; pre_ratio_yes = [];
+    for iFile = 1:numel(yesKNN)
+        T_f   = yesKNN{iFile};
+        ev_f  = detect_gait_events(T_f);
+        lbl_f = label_sos_sts(ev_f.hc_idx, 2);
+        s = extract_sts_swing_stats(T_f, ev_f, lbl_f, 'L');
+        p = extract_sts_peak_stats(T_f,  ev_f, lbl_f, 'L', STS_TARGET);
+        dur_yes          = [dur_yes,          s.duration_ms];
+        past_yes         = [past_yes,         s.time_past_20_ms];
+        ang_yes          = [ang_yes,          s.angle_at_end];
+        work_ratio_yes   = [work_ratio_yes,   s.unnecessary_work_ratio];
+        impulse_past_yes = [impulse_past_yes, s.post_target_impulse_Nms];
+        pre_ratio_yes    = [pre_ratio_yes,    s.pre_target_ratio];
+        peaks_yes        = [peaks_yes,        p.peak_angle];
+        ov_yes           = [ov_yes,           p.overshoot];
+    end
 
-    dur_yes    = stats_yes_L.duration_ms;
-    dur_no     = stats_no_L.duration_ms;
-    past_yes   = stats_yes_L.time_past_20_ms;
-    past_no    = stats_no_L.time_past_20_ms;
-    ang_yes    = stats_yes_L.angle_at_end;
-    ang_no     = stats_no_L.angle_at_end;
-    work_yes   = stats_yes_L.unnecessary_work_J;
-    work_no    = stats_no_L.unnecessary_work_J;
-    peaks_yes  = peak_yes_L.peak_angle;
-    peaks_no   = peak_no_L.peak_angle;
-    ov_yes     = peak_yes_L.overshoot;
-    ov_no      = peak_no_L.overshoot;
+    % Accumulate stats across ALL noKNN files (left leg STS only)
+    dur_no = []; past_no = []; ang_no = []; work_ratio_no = []; peaks_no = []; ov_no = [];
+    impulse_past_no = []; pre_ratio_no = [];
+    for iFile = 1:numel(noKNN)
+        T_f   = noKNN{iFile};
+        ev_f  = detect_gait_events(T_f);
+        lbl_f = label_sos_sts(ev_f.hc_idx, 2);
+        s = extract_sts_swing_stats(T_f, ev_f, lbl_f, 'L');
+        p = extract_sts_peak_stats(T_f,  ev_f, lbl_f, 'L', STS_TARGET);
+        dur_no          = [dur_no,          s.duration_ms];
+        past_no         = [past_no,         s.time_past_20_ms];
+        ang_no          = [ang_no,          s.angle_at_end];
+        work_ratio_no   = [work_ratio_no,   s.unnecessary_work_ratio];
+        impulse_past_no = [impulse_past_no, s.post_target_impulse_Nms];
+        pre_ratio_no    = [pre_ratio_no,    s.pre_target_ratio];
+        peaks_no        = [peaks_no,        p.peak_angle];
+        ov_no           = [ov_no,           p.overshoot];
+    end
 
     figure('Name', 'STS Assist Analysis (Left)', 'Color', 'w', 'Position', [100 50 1200 800]);
 
@@ -232,11 +235,39 @@ if ~isempty(yesKNN) && ~isempty(noKNN)
         sprintf('Peak Overshoot above %d° (STS target)', STS_TARGET));
     yline(0, 'k--', 'LineWidth', 1.2, 'HandleVisibility', 'off');
 
-    % [2,3] Unnecessary mechanical work (angle > STS target)
+    % [2,3] Unnecessary work ratio (angle > STS target) / total work
     subplot(2, 3, 6);
-    plot_group_stats(gca, work_yes, work_no, 'Work (J)', ...
-        sprintf('Unnecessary Work (angle > %d°)', STS_TARGET));
+    plot_group_stats(gca, work_ratio_yes * 100, work_ratio_no * 100, 'Unnecessary Work (%)', ...
+        sprintf('Unnecessary Work Ratio (angle > %d°)', STS_TARGET));
     yline(0, 'k--', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+end
+
+%% 6) Figure 4: Key metrics summary (2×2)
+if ~isempty(yesKNN) && ~isempty(noKNN)
+    figure('Name', 'STS Key Metrics (Left)', 'Color', 'w', 'Position', [200 150 1000 750]);
+
+    % [1,1] Time past target angle until assist end
+    subplot(2, 2, 1);
+    plot_group_stats(gca, past_yes, past_no, 'Time (ms)', ...
+        sprintf('Time Past %d° Until Assist End', STS_TARGET));
+
+    % [1,2] Unnecessary work ratio
+    subplot(2, 2, 2);
+    plot_group_stats(gca, work_ratio_yes * 100, work_ratio_no * 100, 'Unnecessary Work (%)', ...
+        sprintf('Unnecessary Work Ratio (angle > %d°)', STS_TARGET));
+    yline(0, 'k--', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+
+    % [2,1] Post-target angle impulse
+    subplot(2, 2, 3);
+    plot_group_stats(gca, impulse_past_yes, impulse_past_no, 'Impulse (Nm·s)', ...
+        sprintf('Post-%d° Assist Impulse', STS_TARGET));
+    yline(0, 'k--', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+
+    % [2,2] Pre-target assist ratio (= "유효하게 쓰인 assist" 비율)
+    subplot(2, 2, 4);
+    plot_group_stats(gca, pre_ratio_yes * 100, pre_ratio_no * 100, 'Effective Assist (%)', ...
+        sprintf('Assist Ratio Before %d° (Effective)', STS_TARGET));
+    yline(100, 'k--', 'LineWidth', 1.2, 'HandleVisibility', 'off');
 end
 
 %% ========================= Local Functions =========================
@@ -492,13 +523,16 @@ function stats = extract_sts_swing_stats(T, ev, hc_labels, side)
     N = numel(tau);
     omega_rad = gradient(deg2rad(angle), dt);  % angular velocity (rad/s), full signal
 
-    stats.duration_ms        = [];
-    stats.time_past_20_ms    = [];
-    stats.time_past_40_ms    = [];
-    stats.angle_at_end       = [];
-    stats.unnecessary_work_J = [];
-    stats.traj_angle         = {};
-    stats.traj_tau           = {};
+    stats.duration_ms              = [];
+    stats.time_past_20_ms          = [];
+    stats.time_past_40_ms          = [];
+    stats.angle_at_end             = [];
+    stats.unnecessary_work_J       = [];
+    stats.unnecessary_work_ratio   = [];
+    stats.post_target_impulse_Nms  = [];
+    stats.pre_target_ratio         = [];
+    stats.traj_angle               = {};
+    stats.traj_tau                 = {};
 
     for k = 1:numel(trig_idx)
         t_trig = trig_idx(k);
@@ -560,15 +594,35 @@ function stats = extract_sts_swing_stats(T, ev, hc_labels, side)
         P_seg     = tau_seg .* omega_seg;
         mask_20   = angle_seg >= 20;
         unnecessary_work_J = sum(P_seg(mask_20)) * dt;
+        total_work_J       = sum(P_seg) * dt;
+        if total_work_J > 0
+            unnecessary_work_ratio = unnecessary_work_J / total_work_J;
+        else
+            unnecessary_work_ratio = NaN;
+        end
+
+        % Post-target impulse: ∫τ dt for angle >= 20°
+        post_target_impulse_Nms = sum(tau_seg(mask_20)) * dt;
+
+        % Pre-target assist ratio: impulse before target / total impulse
+        total_impulse = sum(tau_seg) * dt;
+        if total_impulse > 0
+            pre_target_ratio = sum(tau_seg(~mask_20)) / sum(tau_seg);
+        else
+            pre_target_ratio = NaN;
+        end
 
         % 저장
-        stats.duration_ms(end+1)        = duration_ms;
-        stats.time_past_20_ms(end+1)    = time_past_20_ms;
-        stats.time_past_40_ms(end+1)    = time_past_40_ms;
-        stats.angle_at_end(end+1)       = angle_at_end;
-        stats.unnecessary_work_J(end+1) = unnecessary_work_J;
-        stats.traj_angle{end+1}         = angle(t_trig:assist_end_idx);
-        stats.traj_tau{end+1}           = tau(t_trig:assist_end_idx);
+        stats.duration_ms(end+1)              = duration_ms;
+        stats.time_past_20_ms(end+1)          = time_past_20_ms;
+        stats.time_past_40_ms(end+1)          = time_past_40_ms;
+        stats.angle_at_end(end+1)             = angle_at_end;
+        stats.unnecessary_work_J(end+1)       = unnecessary_work_J;
+        stats.unnecessary_work_ratio(end+1)   = unnecessary_work_ratio;
+        stats.post_target_impulse_Nms(end+1)  = post_target_impulse_Nms;
+        stats.pre_target_ratio(end+1)         = pre_target_ratio;
+        stats.traj_angle{end+1}               = angle(t_trig:assist_end_idx);
+        stats.traj_tau{end+1}                 = tau(t_trig:assist_end_idx);
     end
 end
 

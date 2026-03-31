@@ -876,7 +876,8 @@ static float ComputeAngleTrapTorque(
     if (*fall_elapsed_ms >= TRAP_FALL_MS) {
       *phase = PHASE_DONE;
       *active = false;
-      *stop_assist = true;
+      // stop_assist is NOT set here — upper peak already set it, and lower peak
+      // of the next swing needs to clear it without it being re-set here.
       tau = 0.0f;
     }
     break;
@@ -885,7 +886,7 @@ static float ComputeAngleTrapTorque(
   default:
     tau = 0.0f;
     *active = false;
-    *stop_assist = true;
+    // stop_assist not set here — managed by upper peak and cleared by lower peak
     break;
   }
 
@@ -1433,11 +1434,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_R_stance_angle_sampled = true;
     s_dbg_R_stance_angle_sample = s_R_prev_stance_angle_at_dpeak;
     s_R_swing_time_ms = 0.0f;
-    // R lower peak: arm uprise. Clear stop only if assist is not active
-    // (prevents re-trigger within same swing, but allows next swing).
+    // R lower peak: always clear Rstop_assist.
+    // Re-trigger guard is handled by !s_assist_active_R && PHASE_DONE in the trigger condition.
     if (is_moving) {
-      if (!s_assist_active_R)
-        Rstop_assist = false;
+      Rstop_assist = false;
       Rflag_assist = true;
     }
   }
@@ -1455,10 +1455,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_L_stance_angle_sampled = true;
     s_dbg_L_stance_angle_sample = s_L_prev_stance_angle_at_dpeak;
     s_L_swing_time_ms = 0.0f;
-    // L lower peak: arm uprise. Clear stop only if assist is not active.
+    // L lower peak: always clear Lstop_assist.
+    // Re-trigger guard is handled by !s_assist_active_L && PHASE_DONE in the trigger condition.
     if (is_moving) {
-      if (!s_assist_active_L)
-        Lstop_assist = false;
+      Lstop_assist = false;
       Lflag_assist = true;
     }
   }
