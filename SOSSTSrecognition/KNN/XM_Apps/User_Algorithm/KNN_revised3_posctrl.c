@@ -122,7 +122,7 @@ static const float kManuscriptFVec[4] = {0.0f, 3.0f, 0.0f, 560.0f};
 
 // Firmware build tag — check via Live Expressions to confirm flash is up to date.
 // Bump this number every time you re-flash.
-__attribute__((used)) volatile int FW_BUILD_TAG = 20260333;
+__attribute__((used)) volatile int FW_BUILD_TAG = 20260336;
 
 // Assist torque amplitude (tau_max) controlled by XM_BTN_1 click.
 // Cycles: 0 -> 1 -> 2 -> ... -> 7 -> 0 -> ...
@@ -167,7 +167,7 @@ typedef enum {
 static inline float KNN_LPF(float x, float *y_prev, float alpha);
 static float ComputeAngleTrapTorque(
     float *elapsed_ms, float *fall_elapsed_ms,
-    AssistPhase_t *phase, bool *active,
+    AssistPhase_t *phase, bool *active, bool *stop_assist,
     float tau_max, float current_angle, float target_angle);
 static inline float clampf_ud(float x, float lo, float hi);
 static inline float ComputeImpulseTorque(float t_ms, float t_rise_ms,
@@ -222,7 +222,7 @@ static float s_Ldeg[3] = {0.0f, 0.0f, 0.0f};
 static const float TRAP_RISE_MS = 30.0f;
 static const float TRAP_FALL_MS = 30.0f;
 static const float TARGET_ANGLE_DEFAULT = 40.0f;  // Non-adaptive & SOS (deg)
-static const float TARGET_ANGLE_STS = 15.0f;      // Adaptive + STS (deg)
+static const float TARGET_ANGLE_STS = 20.0f;      // Adaptive + STS (deg), set to mean STS HC angle (~20 deg)
 
 static bool s_assist_active_R = false;
 static bool s_assist_active_L = false;
@@ -630,7 +630,7 @@ static void Standby_Loop(void) {
   if (s_assist_active_R) {
     tau_R = ComputeAngleTrapTorque(
         &s_assist_elapsed_R_ms, &s_fall_elapsed_R_ms,
-        &s_assist_phase_R, &s_assist_active_R,
+        &s_assist_phase_R, &s_assist_active_R, &Rstop_assist,
         s_assist_tau_max_R, s_Rdeg[2], s_target_angle_R);
   }
   s_tau_original_R = tau_R;
@@ -638,7 +638,7 @@ static void Standby_Loop(void) {
   if (s_assist_active_L) {
     tau_L = ComputeAngleTrapTorque(
         &s_assist_elapsed_L_ms, &s_fall_elapsed_L_ms,
-        &s_assist_phase_L, &s_assist_active_L,
+        &s_assist_phase_L, &s_assist_active_L, &Lstop_assist,
         s_assist_tau_max_L, s_Ldeg[2], s_target_angle_L);
   }
   s_tau_original_L = tau_L;
@@ -734,19 +734,19 @@ static void Active_Loop(void) {
 
   // 0->1 transition 예외 보조: ACTIVE에서도 반드시 소비
   if (s_transition_trigger_R || s_transition_trigger_L) {
-    if (s_transition_trigger_R) {
+    if (s_transition_trigger_R && !s_assist_active_R) {
       trig_R = true;
-      s_assist_active_R = !Rstop_assist && (tau_max_setting > 0);
-      s_assist_tau_max_R = Rstop_assist ? 0.0f : (float)tau_max_setting * 1.0f;
+      s_assist_active_R = (tau_max_setting > 0);
+      s_assist_tau_max_R = (float)tau_max_setting * 1.0f;
       s_assist_elapsed_R_ms = 0.0f;
       s_assist_phase_R = PHASE_RISE;
       s_target_angle_R = TARGET_ANGLE_DEFAULT;
       s_fall_elapsed_R_ms = 0.0f;
     }
-    if (s_transition_trigger_L) {
+    if (s_transition_trigger_L && !s_assist_active_L) {
       trig_L = true;
-      s_assist_active_L = !Lstop_assist && (tau_max_setting > 0);
-      s_assist_tau_max_L = Lstop_assist ? 0.0f : (float)tau_max_setting * 1.0f;
+      s_assist_active_L = (tau_max_setting > 0);
+      s_assist_tau_max_L = (float)tau_max_setting * 1.0f;
       s_assist_elapsed_L_ms = 0.0f;
       s_assist_phase_L = PHASE_RISE;
       s_target_angle_L = TARGET_ANGLE_DEFAULT;
@@ -776,7 +776,7 @@ static void Active_Loop(void) {
   if (s_assist_active_R) {
     tau_R = ComputeAngleTrapTorque(
         &s_assist_elapsed_R_ms, &s_fall_elapsed_R_ms,
-        &s_assist_phase_R, &s_assist_active_R,
+        &s_assist_phase_R, &s_assist_active_R, &Rstop_assist,
         s_assist_tau_max_R, s_Rdeg[2], s_target_angle_R);
   }
   s_tau_original_R = tau_R;
@@ -784,7 +784,7 @@ static void Active_Loop(void) {
   if (s_assist_active_L) {
     tau_L = ComputeAngleTrapTorque(
         &s_assist_elapsed_L_ms, &s_fall_elapsed_L_ms,
-        &s_assist_phase_L, &s_assist_active_L,
+        &s_assist_phase_L, &s_assist_active_L, &Lstop_assist,
         s_assist_tau_max_L, s_Ldeg[2], s_target_angle_L);
   }
   s_tau_original_L = tau_L;
@@ -841,7 +841,7 @@ static inline float ComputeImpulseTorque(float t_ms, float t_rise_ms,
  */
 static float ComputeAngleTrapTorque(
     float *elapsed_ms, float *fall_elapsed_ms,
-    AssistPhase_t *phase, bool *active,
+    AssistPhase_t *phase, bool *active, bool *stop_assist,
     float tau_max, float current_angle, float target_angle) {
 
   float tau = 0.0f;
@@ -860,7 +860,8 @@ static float ComputeAngleTrapTorque(
   case PHASE_PLATEAU:
     tau = tau_max;
     *elapsed_ms += CTRL_DT_MS;
-    if (current_angle >= target_angle) {
+    // Target angle reached OR safety timeout (800ms max plateau)
+    if (current_angle >= target_angle || *elapsed_ms > 800.0f) {
       *phase = PHASE_FALL;
       *fall_elapsed_ms = 0.0f;
     }
@@ -875,6 +876,7 @@ static float ComputeAngleTrapTorque(
     if (*fall_elapsed_ms >= TRAP_FALL_MS) {
       *phase = PHASE_DONE;
       *active = false;
+      *stop_assist = true;
       tau = 0.0f;
     }
     break;
@@ -883,6 +885,7 @@ static float ComputeAngleTrapTorque(
   default:
     tau = 0.0f;
     *active = false;
+    *stop_assist = true;
     break;
   }
 
@@ -1329,9 +1332,14 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       s_gait_mode = NONE;
     }
 
-    // Upper peak = end of right swing. Stop assist.
-    s_assist_active_R = false;
-    s_assist_phase_R = PHASE_DONE;
+    // Upper peak = R swing done. Force fall if assist still running.
+    if (s_assist_active_R && s_assist_phase_R != PHASE_FALL &&
+        s_assist_phase_R != PHASE_DONE) {
+      s_assist_phase_R = PHASE_FALL;
+      s_fall_elapsed_R_ms = 0.0f;
+    }
+    // Block re-trigger until next swing's lower peak clears it via upper peak cycle
+    Rstop_assist = true;
     swing_phase_RT_R = 0.0f;
   }
 
@@ -1400,9 +1408,13 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
       s_gait_mode = NONE;
     }
 
-    // Upper peak = end of left swing. Stop assist.
-    s_assist_active_L = false;
-    s_assist_phase_L = PHASE_DONE;
+    // Upper peak = L swing done. Force fall if assist still running.
+    if (s_assist_active_L && s_assist_phase_L != PHASE_FALL &&
+        s_assist_phase_L != PHASE_DONE) {
+      s_assist_phase_L = PHASE_FALL;
+      s_fall_elapsed_L_ms = 0.0f;
+    }
+    Lstop_assist = true;
     swing_phase_RT_L = 0.0f;
   }
 
@@ -1421,10 +1433,11 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_R_stance_angle_sampled = true;
     s_dbg_R_stance_angle_sample = s_R_prev_stance_angle_at_dpeak;
     s_R_swing_time_ms = 0.0f;
-    // Lower peak: unconditionally clear stop_assist so next swing can fire
+    // R lower peak: arm uprise. Clear stop only if assist is not active
+    // (prevents re-trigger within same swing, but allows next swing).
     if (is_moving) {
-      Rstop_assist = false;
-      Lstop_assist = false;
+      if (!s_assist_active_R)
+        Rstop_assist = false;
       Rflag_assist = true;
     }
   }
@@ -1442,10 +1455,10 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
     s_L_stance_angle_sampled = true;
     s_dbg_L_stance_angle_sample = s_L_prev_stance_angle_at_dpeak;
     s_L_swing_time_ms = 0.0f;
-    // Lower peak: unconditionally clear stop_assist so next swing can fire
+    // L lower peak: arm uprise. Clear stop only if assist is not active.
     if (is_moving) {
-      Rstop_assist = false;
-      Lstop_assist = false;
+      if (!s_assist_active_L)
+        Lstop_assist = false;
       Lflag_assist = true;
     }
   }
@@ -1490,7 +1503,8 @@ static void adaptive_assist(const GaitRecognitionResult_t *rec,
   const bool l_stop = (rec != NULL) ? rec->l_stop_assist : false;
 
   if (rec != NULL) {
-    if (rec->r_uprise_after_lower) {
+    if (rec->r_uprise_after_lower && !s_assist_active_R &&
+        s_assist_phase_R == PHASE_DONE && !Rstop_assist) {
       if (out_trig_R)
         *out_trig_R = true;
       Rflag_assist = false;
@@ -1503,7 +1517,8 @@ static void adaptive_assist(const GaitRecognitionResult_t *rec,
       s_target_angle_R = TARGET_ANGLE_DEFAULT;
       s_fall_elapsed_R_ms = 0.0f;
     }
-    if (rec->l_uprise_after_lower) {
+    if (rec->l_uprise_after_lower && !s_assist_active_L &&
+        s_assist_phase_L == PHASE_DONE && !Lstop_assist) {
       if (out_trig_L)
         *out_trig_L = true;
       Lflag_assist = false;
