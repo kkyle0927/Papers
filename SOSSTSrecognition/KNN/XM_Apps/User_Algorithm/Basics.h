@@ -71,6 +71,9 @@ typedef struct __attribute__((packed)) {
   // Most recent swing times whose KNN confidence was exactly 1.0 (used for
   // normalization).
   float latency;
+  float latency_feature_us;
+  float latency_event_us;
+  float latency_knn_us;
   float T_swing_STS_ms_conf1;
   float TswingRecording_ms;
   float s_vel_HC;
@@ -117,7 +120,7 @@ extern volatile float s_tau_original_L;
 _Static_assert(offsetof(SavingData_t, crc) + sizeof(((SavingData_t *)0)->crc) ==
                    sizeof(SavingData_t),
                "SavingData_t layout error: 'crc' must be the last field");
-_Static_assert(sizeof(SavingData_t) == 216,
+_Static_assert(sizeof(SavingData_t) == 228,
                "SavingData_t size mismatch: update host parser struct");
 #else
 typedef char
@@ -127,7 +130,7 @@ typedef char
                                       ? 1
                                       : -1];
 typedef char
-    SavingData_t_size_must_match[(sizeof(SavingData_t) == 216) ? 1 : -1];
+    SavingData_t_size_must_match[(sizeof(SavingData_t) == 228) ? 1 : -1];
 #endif
 #endif
 
@@ -166,6 +169,9 @@ extern volatile float T_swing_ms;
 extern volatile float T_swing_SOS_ms;
 extern volatile float T_swing_STS_ms;
 extern volatile float latency;
+extern volatile float latency_feature_us;
+extern volatile float latency_event_us;
+extern volatile float latency_knn_us;
 extern volatile float T_swing_STS_ms_conf1;
 extern volatile float TswingRecording_ms;
 extern volatile float s_vel_HC_dbg;

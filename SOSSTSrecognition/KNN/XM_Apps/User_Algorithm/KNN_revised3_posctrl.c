@@ -170,6 +170,7 @@ static float ComputeAngleTrapTorque(
     AssistPhase_t *phase, bool *active, bool *stop_assist,
     float tau_max, float current_angle, float target_angle);
 static inline float clampf_ud(float x, float lo, float hi);
+static inline float CyclesToUs(uint32_t cycles);
 static inline float ComputeImpulseTorque(float t_ms, float t_rise_ms,
                                          float tau_max);
 /**
@@ -323,6 +324,10 @@ static bool s_last_HC_is_STS = false;
 // Debug-visible normalization swing period (ms). Mirrors s_swing_period_ms for
 // Live Expressions.
 volatile float T_swing_ms = 300.0f;
+volatile float latency = 0.0f;
+volatile float latency_feature_us = 0.0f;
+volatile float latency_event_us = 0.0f;
+volatile float latency_knn_us = 0.0f;
 
 // Debug-visible latest swing times by class (ms).
 volatile float T_swing_SOS_ms = 455.0f;
@@ -603,9 +608,11 @@ static void Standby_Loop(void) {
   trig_L = false;
   float ignored_R = 0.0f, ignored_L = 0.0f;
 
+  uint32_t feature_start = DWT->CYCCNT;
   GaitModeRecognition_Update(XM.status.h10.rightThighAngle,
                              XM.status.h10.leftThighAngle,
                              (GaitFeatures_t *)&s_gait_feat);
+  latency_feature_us = CyclesToUs(DWT->CYCCNT - feature_start);
   GaitModeRecognition_DetectEvents((const GaitFeatures_t *)&s_gait_feat,
                                    (GaitRecognitionResult_t *)&s_gait_rec);
   s_is_moving = s_gait_feat.is_moving;
@@ -718,9 +725,11 @@ static void Active_Loop(void) {
   trig_L = false;
   float ignored_R = 0.0f, ignored_L = 0.0f;
 
+  uint32_t feature_start = DWT->CYCCNT;
   GaitModeRecognition_Update(XM.status.h10.rightThighAngle,
                              XM.status.h10.leftThighAngle,
                              (GaitFeatures_t *)&s_gait_feat);
+  latency_feature_us = CyclesToUs(DWT->CYCCNT - feature_start);
   GaitModeRecognition_DetectEvents((const GaitFeatures_t *)&s_gait_feat,
                                    (GaitRecognitionResult_t *)&s_gait_rec);
   s_is_moving = s_gait_feat.is_moving;
@@ -818,6 +827,11 @@ static inline float clampf_ud(float x, float lo, float hi) {
   if (x > hi)
     return hi;
   return x;
+}
+
+static inline float CyclesToUs(uint32_t cycles) {
+  extern uint32_t SystemCoreClock;
+  return (float)cycles / ((float)SystemCoreClock / 1000000.0f);
 }
 
 static inline float ComputeImpulseTorque(float t_ms, float t_rise_ms,
@@ -1096,6 +1110,8 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
   static bool s_prev_Rflag_assist = false;
   static bool s_prev_Lflag_assist = false;
   static int s_prev_is_moving = 0;
+  uint32_t detect_start = DWT->CYCCNT;
+  uint32_t knn_cycles_accum = 0u;
 
   if (res_out) {
     memset(res_out, 0, sizeof(*res_out));
@@ -1199,9 +1215,11 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
         s_dbg_scaling_X = s_scaling_X;
         s_dbg_scaling_Y = s_scaling_Y;
 
+        uint32_t knn_start = DWT->CYCCNT;
         const int knn_label = knn_2label_majority_ud(
             ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT, s_norm_vel_HC, s_norm_T_HC,
             KNN_K, &s_g_knn_conf);
+        knn_cycles_accum += (DWT->CYCCNT - knn_start);
         s_gait_mode = (knn_label == 1) ? RSTS : RSOS;
         s_gait_mode_latch_leg = GAIT_LATCH_R;
 
@@ -1240,9 +1258,11 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
         s_dbg_scaling_X = s_scaling_X;
         s_dbg_scaling_Y = s_scaling_Y;
 
+        uint32_t knn_start = DWT->CYCCNT;
         const int knn_label = knn_2label_majority_ud(
             ref_xy, KNN_REF_COUNT, KNN_REF_SPLIT, s_norm_vel_HC, s_norm_T_HC,
             KNN_K, &s_g_knn_conf);
+        knn_cycles_accum += (DWT->CYCCNT - knn_start);
         s_gait_mode = (knn_label == 1) ? LSTS : LSOS;
         s_gait_mode_latch_leg = GAIT_LATCH_L;
 
@@ -1485,6 +1505,17 @@ static void GaitModeRecognition_DetectEvents(const GaitFeatures_t *feat,
   s_prev_Rflag_assist = Rflag_assist;
   s_prev_Lflag_assist = Lflag_assist;
   s_prev_is_moving = is_moving;
+
+  {
+    const uint32_t detect_total_cycles = DWT->CYCCNT - detect_start;
+    const uint32_t event_cycles =
+        (detect_total_cycles >= knn_cycles_accum)
+            ? (detect_total_cycles - knn_cycles_accum)
+            : 0u;
+    latency_event_us = CyclesToUs(event_cycles);
+    latency_knn_us = CyclesToUs(knn_cycles_accum);
+    latency = latency_feature_us + latency_event_us + latency_knn_us;
+  }
 }
 
 static void adaptive_assist(const GaitRecognitionResult_t *rec,
@@ -1638,6 +1669,10 @@ static void ResetUserState(void) {
   T_swing_ms = s_swing_period_ms;
   T_swing_SOS_ms = s_T_swing_SOS_ms;
   T_swing_STS_ms = s_T_swing_STS_ms;
+  latency = 0.0f;
+  latency_feature_us = 0.0f;
+  latency_event_us = 0.0f;
+  latency_knn_us = 0.0f;
 
   s_hc_deg_thresh = 10.0f;
   s_dbg_hc_deg_thresh = s_hc_deg_thresh;

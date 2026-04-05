@@ -53,9 +53,10 @@ SOF_BYTES_LE = b"\x55\xAA"
 ## Firmware SavingData_t (packed) payload schema:
 STRUCT_FMT_208 = '<IBBB20f6iBBf17fffBff'
 STRUCT_FMT_216 = '<IBBB20f6iBBf19fBffff'
+STRUCT_FMT_228 = '<IBBB20f6iBBf22fBffff'
 
-EXPECTED_TOTAL_PACKET_SIZE = 216 
-ALLOWED_TOTAL_PACKET_SIZES = {208, 216}
+EXPECTED_TOTAL_PACKET_SIZE = 228 
+ALLOWED_TOTAL_PACKET_SIZES = {208, 216, 228}
 
 CSV_HEADER = (
     "LoopCnt,H10Mode,H10AssistLevel,SmartAssist," 
@@ -68,7 +69,8 @@ CSV_HEADER = (
     "is_moving,hc_count,R_count_upeak,L_count_upeak,R_count_dpeak,L_count_dpeak," 
     "tau_max_setting,s_gait_mode,s_g_knn_conf," 
     "T_swing_ms,T_swing_SOS_ms,T_swing_STS_ms," 
-    "latency,T_swing_STS_ms_conf1,TswingRecording_ms," 
+    "latency,latency_feature_us,latency_event_us,latency_knn_us,"
+    "T_swing_STS_ms_conf1,TswingRecording_ms," 
     "s_vel_HC,s_T_HC_s," 
     "s_norm_vel_HC,s_norm_T_HC,s_scaling_X,s_scaling_Y," 
     "s_t_gap_R_ms,s_t_gap_L_ms,s_hc_deg_thresh,s_thres_up,s_thres_down,"
@@ -82,7 +84,7 @@ CSV_COLS = CSV_HEADER.split(",")
 def make_missing_row(loop_cnt: int, last_row=None):
     row = [float("nan")] * len(CSV_COLS)
     row[0] = int(loop_cnt)
-    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31, 52}
+    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31, 55}
     if last_row is None:
         for idx in int_indices:
             if idx == 0: continue
@@ -154,8 +156,8 @@ def crc16_modbus(data: bytes, init_val: int = 0xFFFF) -> int:
     return crc
 
 def decode_packet(data_tuple):
-    # Support both legacy (55) and extended (57) formats
-    if len(data_tuple) not in (55, 57):
+    # Support legacy (55), previous extended (57), and current extended (60).
+    if len(data_tuple) not in (55, 57, 60):
         raise ValueError(f"Unexpected data length: {len(data_tuple)}")
     row = [0] * len(CSV_COLS)
     row[0] = int(data_tuple[0])
@@ -172,18 +174,34 @@ def decode_packet(data_tuple):
     row[30] = int(data_tuple[base + 0])
     row[31] = int(data_tuple[base + 1])
     base = 4 + 20 + 6 + 2
-    row[32] = float(data_tuple[base])  # latency
-    row[33] = float(data_tuple[base + 1])  # T_swing_STS_ms_conf1
-    base = 4 + 20 + 6 + 2 + 2
-    for i in range(16): row[34 + i] = float(data_tuple[base + i])
-    base_new = 4 + 20 + 6 + 2 + 2 + 16  # = 50
-    row[50] = float(data_tuple[base_new])      # s_tau_cmd_R
-    row[51] = float(data_tuple[base_new + 1])  # s_tau_cmd_L
-    row[52] = int(data_tuple[base_new + 2])    # adaptive_assist_enabled
-    row[53] = float(data_tuple[base_new + 3])  # swing_phase_RT_R
-    row[54] = float(data_tuple[base_new + 4])  # swing_phase_RT_L
-    row[55] = float(data_tuple[base_new + 5]) if len(data_tuple) > 55 else 0.0 # s_tau_original_R
-    row[56] = float(data_tuple[base_new + 6]) if len(data_tuple) > 56 else 0.0 # s_tau_original_L
+    row[32] = float(data_tuple[base])  # s_g_knn_conf
+
+    if len(data_tuple) == 60:
+        for i in range(22):
+            row[33 + i] = float(data_tuple[base + 1 + i])
+        base_new = base + 1 + 22
+        row[55] = int(data_tuple[base_new])       # adaptive_assist_enabled
+        row[56] = float(data_tuple[base_new + 1]) # swing_phase_RT_R
+        row[57] = float(data_tuple[base_new + 2]) # swing_phase_RT_L
+        row[58] = float(data_tuple[base_new + 3]) # s_tau_original_R
+        row[59] = float(data_tuple[base_new + 4]) # s_tau_original_L
+    else:
+        # Legacy packets do not carry the three per-stage latency fields.
+        row[33] = float(data_tuple[base + 1])  # T_swing_ms
+        row[34] = float(data_tuple[base + 2])  # T_swing_SOS_ms
+        row[35] = float(data_tuple[base + 3])  # T_swing_STS_ms
+        row[36] = float(data_tuple[base + 4])  # latency
+        row[37] = 0.0
+        row[38] = 0.0
+        row[39] = 0.0
+        for i in range(15):
+            row[40 + i] = float(data_tuple[base + 5 + i])
+        base_new = base + 1 + 19
+        row[55] = int(data_tuple[base_new])       # adaptive_assist_enabled
+        row[56] = float(data_tuple[base_new + 1]) # swing_phase_RT_R
+        row[57] = float(data_tuple[base_new + 2]) # swing_phase_RT_L
+        row[58] = float(data_tuple[base_new + 3]) if len(data_tuple) > (base_new + 3) else 0.0
+        row[59] = float(data_tuple[base_new + 4]) if len(data_tuple) > (base_new + 4) else 0.0
     return row
 
 def decode_payload_to_row(payload: bytes, last_good_row=None):
@@ -192,6 +210,8 @@ def decode_payload_to_row(payload: bytes, last_good_row=None):
         fmt = STRUCT_FMT_208
     elif p_size == 210: # 216 - 6
         fmt = STRUCT_FMT_216
+    elif p_size == 222: # 228 - 6
+        fmt = STRUCT_FMT_228
     else:
         raise ValueError(f"Unknown payload size: {p_size}")
         
@@ -199,7 +219,7 @@ def decode_payload_to_row(payload: bytes, last_good_row=None):
     return decode_packet(data_tuple)
 
 def row_to_csv_line(row):
-    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31, 52}
+    int_indices = {0, 1, 2, 3, 24, 25, 26, 27, 28, 29, 30, 31, 55}
     parts = []
     for idx, val in enumerate(row):
         if idx in int_indices: parts.append(str(int(val)))
@@ -368,7 +388,7 @@ class SerialWorker(QtCore.QObject):
                         self._inc_error("CRC Mismatch")
                     else:
                         payload = packet[4:-2]
-                        if len(payload) not in (202, 210):
+                        if len(payload) not in (202, 210, 222):
                             self._inc_error(f"Bad Payload Size: {len(payload)}")
                         else:
                             try:
@@ -409,6 +429,7 @@ class CsvReviewDialog(QtWidgets.QDialog):
             ["LeftHipMotorAngle","RightHipMotorAngle","LeftThighAngle","RightThighAngle"],
             ["s_g_knn_conf","s_scaling_X","s_scaling_Y"],
             ["TswingRecording_ms","T_swing_ms","T_swing_SOS_ms","T_swing_STS_ms"],
+            ["latency", "latency_feature_us", "latency_event_us", "latency_knn_us"],
             ["is_moving","hc_count","swing_phase_RT_R","swing_phase_RT_L"],
             ["tau_max_setting","s_gait_mode","s_g_knn_conf", "s_vel_HC","s_T_HC_s","s_norm_vel_HC","s_norm_T_HC"],
         ]
@@ -862,7 +883,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sanity_error_label.setFont(font)
         state_layout.addWidget(self.sanity_error_label)
 
-        self.debug_label = QtWidgets.QLabel(f"Expected: 208 or 216 bytes\nLast packet: -")
+        self.debug_label = QtWidgets.QLabel(f"Expected: 208, 216, or 228 bytes\nLast packet: -")
         self.debug_label.setWordWrap(True)
         self.debug_label.setStyleSheet("color: #374151;")
         state_layout.addWidget(self.debug_label)
@@ -1191,13 +1212,14 @@ class MainWindow(QtWidgets.QMainWindow):
             m = re.search(r"rx_len=(\d+)", msg)
             if m: self._last_rx_len = int(m.group(1))
         except: pass
-        expected_total = 216
-        expected_payload = 210
+        expected_total = 228
+        expected_payload = 222
         expected_total_from_payload = expected_payload + 6
         lines = [
             f"Expected total: {expected_total} bytes",
             f"Expected payload: {expected_payload} bytes",
             f"(Payload->Total): {expected_total_from_payload} bytes",
+            "Legacy packets: 208 / 216 bytes",
         ]
         if self._recent_err_summary: lines.append(self._recent_err_summary)
         if self._last_rx_len is not None:
